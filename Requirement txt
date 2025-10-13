@@ -1,7 +1,7 @@
 aiogram==3.22.0
 Flask==3.0.3
-pyrogram
-firebase-admin
-algoliasearch
-rapidfuzz
-python-Levenshtein
+pyrogram==2.0.106
+firebase-admin==6.5.0
+algoliasearch==3.0.0
+rapidfuzz==3.9.4
+python-Levenshtein==0.26.1
