@@ -1,3 +1,4 @@
+```text
 aiogram==3.22.0
 Flask==3.0.3
 pyrogram
@@ -5,3 +6,4 @@ firebase-admin
 algoliasearch
 rapidfuzz==3.14.1
 python-Levenshtein==0.27.1
+```
