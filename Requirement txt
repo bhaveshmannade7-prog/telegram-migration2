@@ -1,0 +1,9 @@
+aiogram==3.22.0
+Flask==3.0.3
+pyrogram
+firebase-admin
+algoliasearch
+# Compiling libraries (Termux/Local needs these, Replit handles them automatically)
+# We include them just in case, though Replit should manage them:
+rapidfuzz
+python-Levenshtein
