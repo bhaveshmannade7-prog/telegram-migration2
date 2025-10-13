@@ -1,3 +1,4 @@
+````markdown name=requirements.txt
 aiogram==3.22.0
 Flask==3.0.3
 pyrogram
@@ -5,3 +6,4 @@ firebase-admin
 algoliasearch
 rapidfuzz
 python-Levenshtein
+````
