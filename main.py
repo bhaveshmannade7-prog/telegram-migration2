@@ -2,6 +2,7 @@
 """
 Telegram Channel Cleanup Bot - MEGA FAST VERSION
 Processes 30 messages in parallel with crash protection!
+** RENDER WEB SERVICE COMPATIBLE VERSION **
 """
 
 import os
@@ -12,9 +13,12 @@ import threading
 from telebot.apihelper import ApiTelegramException
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# === NAYE IMPORTS RENDER KE LIYE ===
+from flask import Flask
+
 # Bot configuration
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CHANNEL_ID = -1003138949015
+CHANNEL_ID = int(os.environ.get('CHANNEL_ID', -1003138949015)) # Behtar tareeka
 
 if not BOT_TOKEN:
     print("ERROR: BOT_TOKEN environment variable not found!")
@@ -263,27 +267,28 @@ def handle_edited_post(message):
     """Handle edited posts."""
     handle_channel_post(message)
 
-if __name__ == "__main__":
-    print("=" * 60)
-    print("🚀 TELEGRAM CLEANUP BOT - MEGA FAST")
-    print("=" * 60)
-    print(f"Channel: {CHANNEL_ID}")
-    print("\n🛡️ Protected URLs:")
-    for url in WHITELISTED_URLS:
-        print(f"   ✓ {url}")
-    print("\n🛡️ Protected Usernames:")
-    for username in WHITELISTED_USERNAMES:
-        print(f"   ✓ {username}")
-    print("=" * 60)
-    
-    try:
-        bot_info = bot.get_me()
-        chat = bot.get_chat(CHANNEL_ID)
-        print(f"\n✅ Bot: @{bot_info.username}")
-        print(f"✅ Channel: {chat.title if hasattr(chat, 'title') else CHANNEL_ID}")
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        exit(1)
+# ===============================================
+# RENDER WEB SERVICE KE LIYE CODE
+# ===============================================
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    """Ek simple route taaki Render ko lage ki server zinda hai."""
+    return "Bot is alive and running!"
+
+def run_web_server():
+    """Render ke diye gaye PORT par web server chalaata hai."""
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# ===============================================
+# BOT LOGIC AB IS FUNCTION MEIN HAI
+# ===============================================
+
+def run_bot():
+    """Aapka poora bot logic ab is function ke andar hai."""
     
     print("\n" + "=" * 60)
     print("🚀 2-PHASE MEGA-FAST CLEANUP")
@@ -297,7 +302,7 @@ if __name__ == "__main__":
         cleanup_batch_parallel()
         
         # PHASE 2: Realtime monitoring
-        print("\n" + "=" * 60)
+        print("\n"S" + "=" * 60)
         print("✅ PHASE 2: REALTIME MONITORING")
         print("=" * 60)
         print("🔥 Monitoring new messages...")
@@ -324,3 +329,42 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n\n❌ Critical error: {e}")
         print("Bot will attempt to continue...")
+
+# ===============================================
+# MAIN STARTUP
+# ===============================================
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("🚀 TELEGRAM CLEANUP BOT - MEGA FAST")
+    print("=" * 60)
+    print(f"Channel: {CHANNEL_ID}")
+    print("\n🛡️ Protected URLs:")
+    for url in WHITELISTED_URLS:
+        print(f"   ✓ {url}")
+    print("\n🛡️ Protected Usernames:")
+    for username in WHITELISTED_USERNAMES:
+        print(f"   ✓ {username}")
+    print("=" * 60)
+    
+    try:
+        bot_info = bot.get_me()
+        chat = bot.get_chat(CHANNEL_ID)
+        print(f"\n✅ Bot: @{bot_info.username}")
+        print(f"✅ Channel: {chat.title if hasattr(chat, 'title') else CHANNEL_ID}")
+    except Exception as e:
+        # Agar bot token galat hai, toh bhi web server chalne dein
+        # taaki logs dekh sakein, program crash na ho.
+        print(f"\n❌ Error connecting to Telegram: {e}")
+        print("   Bot logic may fail, but starting web server for Render.")
+    
+    # 1. Web server ko ek alag thread (background) mein chalaayein
+    print("\nStarting web server thread (for Render)...")
+    web_thread = threading.Thread(target=run_web_server)
+    web_thread.daemon = True  # Taaki main program band hone par yah bhi band ho jaaye
+    web_thread.start()
+    
+    # 2. Bot ko main thread mein chalaayein
+    print("Starting bot logic (Phase 1 & 2)...")
+    run_bot()
+
