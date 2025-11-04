@@ -1,3 +1,4 @@
 Pyrogram
 TGCrypto
-Flask
+aiohttp
+asyncpg
