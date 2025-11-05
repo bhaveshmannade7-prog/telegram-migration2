@@ -15,11 +15,9 @@ from pyrogram.errors import FloodWait, MessageNotModified
 # --- CONFIG (ENV VARS) ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
-# === CHANGE 1: ADMIN LIST ===
-# Purane ADMIN_ID ko aur naye ID ko ek list mein daal diya hai
+# Admin List
 MAIN_ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 ADMIN_IDS = [MAIN_ADMIN_ID, 920892710] 
-# === END CHANGE 1 ===
 
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
@@ -95,10 +93,8 @@ def get_main_menu():
     return m
 
 # ---------- TELEBOT ----------
-# === CHANGE 2: TELEBOT HANDLERS ===
 @bot.message_handler(commands=['start', 'help'])
 async def start_cmd(message):
-    # Check if user is in the admin list
     if message.from_user.id not in ADMIN_IDS:
         return await bot.reply_to(message, "⛔ Not Authorized")
     await bot.reply_to(message,
@@ -108,7 +104,6 @@ async def start_cmd(message):
 
 @bot.callback_query_handler(func=lambda c: True)
 async def cb(call):
-    # Check if user is in the admin list
     if call.from_user.id not in ADMIN_IDS:
         return await bot.answer_callback_query(call.id, "⛔ Not Allowed", show_alert=True)
 
@@ -119,15 +114,19 @@ async def cb(call):
                 total = await conn.fetchval("SELECT COUNT(*) FROM indexed_movies")
         await bot.send_message(call.message.chat.id, f"📊 Total Movies in DB: `{total}`")
 
+    # === CHANGE: "info_index" AB ASLI MEIN INDEX KAREGA ===
     elif call.data == "info_index":
-        await bot.send_message(call.message.chat.id, "Go to *Saved Messages* and send `/index`")
+        # Button click ko turant answer karein
+        await bot.answer_callback_query(call.id, "🚀 Starting Full Index...")
+        # Indexing ko background task mein chalayein
+        asyncio.create_task(run_index_job_for_telebot(call))
+    # === END CHANGE ===
 
     elif call.data == "info_clean":
         await bot.send_message(call.message.chat.id, "Go to *Saved Messages* and send `/cleanall`")
 
     elif call.data == "info_refresh":
         await bot.send_message(call.message.chat.id, "Reply a movie in channel & send `/refresh`")
-# === END CHANGE 2 ===
 
 
 # ---------- INDEXER AUTO HANDLER ----------
@@ -163,29 +162,67 @@ async def new_post(client, message):
 async def edited_post(client, message):
     await process_post(message)
 
-# ---------- MANUAL COMMANDS ----------
-# === CHANGE 3: PYROGRAM HANDLERS ===
-@app.on_message(filters.command("index") & filters.user(ADMIN_IDS))
-async def full_index(client, message):
+
+# ---------- MANUAL COMMANDS / INDEXING LOGIC ----------
+
+# === NEW FUNCTION 1: Asli Indexing Ka Logic ===
+# Is function ko Pyrogram aur Telebot dono istemal karenge
+async def run_the_index_job():
     if db_pool is None:
-        return await message.reply("❌ DB Not Connected")
+        return "❌ DB Not Connected", -1 # Error message, count
 
     if batch_job_lock.locked():
-        return await message.reply("⏳ Another job running")
+        return "⏳ Another job is already running", -1
 
     async with batch_job_lock:
-        status = await message.reply("⏳ Indexing...")
         count_new = 0
-        async for m in app.get_chat_history(SOURCE_CHANNEL_ID):
-            uid = get_file_id(m)
-            if uid:
-                async with db_pool.acquire() as conn:
-                    exists = await conn.fetchval("SELECT 1 FROM indexed_movies WHERE file_unique_id=$1", uid)
-                    if not exists:
-                        await conn.execute("INSERT INTO indexed_movies VALUES ($1,$2) ON CONFLICT DO NOTHING", m.id, uid)
-                        count_new += 1
-            await asyncio.sleep(0.1)
-        await status.edit(f"✅ Done. Added: `{count_new}`")
+        try:
+            # Pyrogram app (user account) se history fetch karein
+            async for m in app.get_chat_history(SOURCE_CHANNEL_ID):
+                uid = get_file_id(m)
+                if uid:
+                    async with db_pool.acquire() as conn:
+                        exists = await conn.fetchval("SELECT 1 FROM indexed_movies WHERE file_unique_id=$1", uid)
+                        if not exists:
+                            await conn.execute("INSERT INTO indexed_movies VALUES ($1,$2) ON CONFLICT DO NOTHING", m.id, uid)
+                            count_new += 1
+                await asyncio.sleep(0.05) # Thoda fast kar diya
+        except Exception as e:
+            print(f"❌ Indexing Error: {e}")
+            return f"❌ Error during index: {e}", -1
+        
+        return f"✅ Indexing Done. Added: `{count_new}` new movies.", count_new
+
+# === NEW FUNCTION 2: Telebot ke liye wrapper ===
+# Yeh function telebot ko status message bhej ne aur edit karne mein madad karta hai
+async def run_index_job_for_telebot(call):
+    status_msg = None
+    try:
+        # User ko status message bhejein
+        status_msg = await bot.send_message(call.message.chat.id, "⏳ Indexing... Please wait.")
+        
+        # Asli job chalayein
+        result_msg, count = await run_the_index_job()
+        
+        # Status message ko result se edit karein
+        await bot.edit_message_text(result_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id)
+    
+    except Exception as e:
+        print(f"❌ Telebot Job Error: {e}")
+        if status_msg:
+            await bot.edit_message_text(f"❌ Job failed: {e}", chat_id=status_msg.chat.id, message_id=status_msg.message_id)
+        else:
+            await bot.send_message(call.message.chat.id, f"❌ Job failed: {e}")
+
+# === UPDATED: Pyrogram /index command ===
+@app.on_message(filters.command("index") & filters.user(ADMIN_IDS))
+async def full_index(client, message):
+    status = await message.reply("⏳ Indexing...")
+    # Asli job chalayein
+    result_msg, count = await run_the_index_job()
+    # Result ko edit karein
+    await status.edit(result_msg)
+
 
 @app.on_message(filters.command("cleanall") & filters.user(ADMIN_IDS))
 async def clean_all(client, message):
@@ -223,7 +260,6 @@ async def refresh(client, message):
     new_cap = clean_caption(msg.caption) + CAPTION_FOOTER
     await msg.edit_caption(new_cap)
     await message.reply("✅ Refreshed")
-# === END CHANGE 3 ===
 
 # ---------- WEB SERVER ----------
 async def web_server():
