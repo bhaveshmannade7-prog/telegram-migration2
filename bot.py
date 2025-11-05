@@ -410,9 +410,24 @@ async def run_the_index_job():
     if batch_job_lock.locked():
         return "⏳ Another job is already running", -1
 
+    # --- NEW: Pre-flight check ---
+    try:
+        # Try to get chat info first. This fails faster if ID is bad.
+        print(f"Checking access to channel: {SOURCE_CHANNEL_ID}")
+        await app.get_chat(SOURCE_CHANNEL_ID)
+        print(f"✅ Access to {SOURCE_CHANNEL_ID} successful.")
+    except Exception as e:
+        print(f"❌ Indexing Pre-Check Error: {e}")
+        # Yahaan behtar error message dein
+        return f"❌ Error: Could not access channel `{SOURCE_CHANNEL_ID}`. \n" \
+               f"Reason: `{e}`\n\n" \
+               f"👉 **Please make sure your bot/account (using SESSION_STRING) is a member of this channel and the ID is correct.**", -1
+    # --- End of new check ---
+
     async with batch_job_lock:
         count_new = 0
         try:
+            # This should be safe now if the check above passed
             async for m in app.get_chat_history(SOURCE_CHANNEL_ID):
                 uid = get_file_id(m)
                 if uid:
@@ -423,15 +438,16 @@ async def run_the_index_job():
                             count_new += 1
                 await asyncio.sleep(0.05) 
         except Exception as e:
-            print(f"❌ Indexing Error: {e}")
-            return f"❌ Error during index: {e}", -1
+            # This is now a fallback error
+            print(f"❌ Indexing Error during history scan: {e}")
+            return f"❌ Error during index scan: {e}", -1
         
         return f"✅ Indexing Done. Added: `{count_new}` new movies.", count_new
 
 async def run_index_job_for_telebot(call):
     status_msg = None
     try:
-        status_msg = await bot.send_message(call.message.chat.id, "⏳ Indexing... Please wait.")
+        status_msg = await bot.send_message(call.message.chat.id, "⏳ Indexing... Please wait. (Checking channel access first...)")
         result_msg, count = await run_the_index_job()
         await bot.edit_message_text(result_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id)
     
@@ -444,7 +460,7 @@ async def run_index_job_for_telebot(call):
 
 @app.on_message(filters.command("index") & filters.user(ADMIN_IDS))
 async def full_index(client, message):
-    status = await message.reply("⏳ Indexing...")
+    status = await message.reply("⏳ Indexing... (Checking channel access first...)")
     result_msg, count = await run_the_index_job()
     await status.edit(result_msg)
 
