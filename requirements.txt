@@ -1,3 +1,5 @@
 pyTelegramBotAPI
 asyncpg
 aiohttp
+Pyrogram
+TGCrypto
