@@ -40,17 +40,17 @@ BATCH_SLEEP_TIME = 2
 db_pool = None
 batch_job_lock = asyncio.Lock()
 
-# Init Bots
-# Default parse_mode='Markdown' (V1) hai. Hum isse nahi chhedenge.
-bot = AsyncTeleBot(BOT_TOKEN, parse_mode='Markdown')
+# =================================================================
+# === ASLI FIX YAHAN HAI ===
+# Default parse_mode ko hata diya gaya hai. Ab default PLAIN TEXT hai.
+# =================================================================
+bot = AsyncTeleBot(BOT_TOKEN) 
 app = Client("indexer", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
 
 print("\n============================")
 print("🤖 HYBRID BOT STARTING...")
 print("============================\n")
 
-# --- (REMOVED) escape_md function ko hata diya gaya hai. ---
-# Woh V2/V1 ka confusion paida kar raha tha.
 
 # ---------- DATABASE ----------
 async def init_database():
@@ -123,11 +123,14 @@ def get_main_menu():
 async def start_cmd(message):
     if message.from_user.id not in ADMIN_IDS:
         return await bot.reply_to(message, "⛔ Not Authorized")
+    
+    # FIX: parse_mode="Markdown" alag se add kiya gaya
     await bot.reply_to(message,
         "👋 *Admin Menu*\n\n"
         "Aap `/whoami` command type karke bhej sakte hain "
         "yeh check karne ke liye ki `SESSION_STRING` kis account ka hai.",
-        reply_markup=get_main_menu()
+        reply_markup=get_main_menu(),
+        parse_mode="Markdown" 
     )
 
 # =================================================================
@@ -153,19 +156,19 @@ async def whoami_cmd(message):
             f"channel `{SOURCE_CHANNEL_ID}` mein **Admin** hai ya nahi."
         )
         
-        # Success message, default 'Markdown' (V1)
-        await bot.edit_message_text(response_text, chat_id=status_msg.chat.id, message_id=status_msg.message_id)
+        # FIX: parse_mode="Markdown" alag se add kiya gaya
+        await bot.edit_message_text(response_text, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
         
     except Exception as e:
         # =================================================
         # === ASLI FIX YAHAN HAI ===
-        # Error message ko V1 code ticks (``) mein daal diya
+        # Ab yahaan koi parse_mode nahi hai. Yeh PLAIN TEXT jayega.
         # =================================================
         await bot.edit_message_text(
-            f"❌ /whoami command fail ho gaya:\n`{e}`",
+            f"❌ /whoami command fail ho gaya:\n{e}", # Simple text
             chat_id=status_msg.chat.id, 
             message_id=status_msg.message_id,
-            parse_mode="Markdown" # V1 mode
+            parse_mode=None # Force plain text
         )
 # =================================================================
 # === NAYA COMMAND END ===
@@ -183,11 +186,14 @@ async def cb(call):
             async with db_pool.acquire() as conn:
                 total_source = await conn.fetchval("SELECT COUNT(*) FROM indexed_movies")
                 total_target = await conn.fetchval("SELECT COUNT(*) FROM target_channel_files")
+        
+        # FIX: parse_mode="Markdown" alag se add kiya gaya
         await bot.send_message(
             call.message.chat.id, 
             f"📊 **Database Stats**\n\n"
             f"Source Channel Movies: `{total_source}`\n"
-            f"Target Channel (@MAZABACKUP01) Movies: `{total_target}`"
+            f"Target Channel (@MAZABACKUP01) Movies: `{total_target}`",
+            parse_mode="Markdown"
         )
 
     elif call.data == "info_index":
@@ -201,15 +207,18 @@ async def cb(call):
             call.message.chat.id, 
             "REPLY TO THIS MESSAGE:\n\n"
             "Please send the **Source Channel ID** or **Username** (e.g., -100... or @channelname):", 
-            reply_markup=types.ForceReply(selective=True)
+            reply_markup=types.ForceReply(selective=True),
+            parse_mode="Markdown" # FIX: Added
         )
     elif call.data == "dedupe_target_start":
         await bot.answer_callback_query(call.id, "🚀 Starting Duplicate Cleanup for @MAZABACKUP01...")
         asyncio.create_task(run_dedupe_job(call))
     elif call.data == "info_clean":
-        await bot.send_message(call.message.chat.id, "Go to *Saved Messages* and send `/cleanall`")
+        # FIX: parse_mode="Markdown" alag se add kiya gaya
+        await bot.send_message(call.message.chat.id, "Go to *Saved Messages* and send `/cleanall`", parse_mode="Markdown")
     elif call.data == "info_refresh":
-        await bot.send_message(call.message.chat.id, "Reply a movie in channel & send `/refresh`")
+        # FIX: parse_mode="Markdown" alag se add kiya gaya
+        await bot.send_message(call.message.chat.id, "Reply a movie in channel & send `/refresh`", parse_mode="Markdown")
 
 @bot.message_handler(
     func=lambda m: m.reply_to_message 
@@ -228,14 +237,16 @@ async def handle_forward_source(message):
         except ValueError:
             await bot.reply_to(message, "Invalid Channel ID. Must be a number.")
             return
-    await bot.reply_to(message, f"Got it. Starting to forward from `{source_chat_id}` to @MAZABACKUP01...")
+    # FIX: parse_mode="Markdown" alag se add kiya gaya
+    await bot.reply_to(message, f"Got it. Starting to forward from `{source_chat_id}` to @MAZABACKUP01...", parse_mode="Markdown")
     asyncio.create_task(run_forwarding_job(message, source_chat_id))
 
 async def run_forwarding_job(message, source_chat_id):
     if db_pool is None: return await bot.send_message(message.chat.id, "❌ DB Not Connected")
     if batch_job_lock.locked(): return await bot.send_message(message.chat.id, "⏳ Another job is already running. Please wait.")
 
-    status_msg = await bot.send_message(message.chat.id, f"⏳ Starting forward job from `{source_chat_id}`...")
+    # FIX: parse_mode="Markdown" alag se add kiya gaya
+    status_msg = await bot.send_message(message.chat.id, f"⏳ Starting forward job from `{source_chat_id}`...", parse_mode="Markdown")
     total_forwarded = 0
     total_skipped = 0
     batch_count = 0
@@ -246,10 +257,12 @@ async def run_forwarding_job(message, source_chat_id):
                 rows = await conn.fetch("SELECT file_unique_id FROM target_channel_files")
                 existing_uids = {r['file_unique_id'] for r in rows}
             
+            # FIX: parse_mode="Markdown" alag se add kiya gaya
             await bot.edit_message_text(
                 f"Found `{len(existing_uids)}` movies already in @MAZABACKUP01 (DB). \n"
                 f"⏳ Starting scan of `{source_chat_id}`...",
-                chat_id=status_msg.chat.id, message_id=status_msg.message_id
+                chat_id=status_msg.chat.id, message_id=status_msg.message_id,
+                parse_mode="Markdown"
             )
             
             async for msg in app.get_chat_history(source_chat_id):
@@ -267,47 +280,55 @@ async def run_forwarding_job(message, source_chat_id):
                     batch_count += 1
                     
                     if total_forwarded % 20 == 0:
+                        # FIX: parse_mode="Markdown" alag se add kiya gaya
                         await bot.edit_message_text(
                             f"⏳ Progress...\nForwarded: `{total_forwarded}`\nSkipped: `{total_skipped}`",
-                            chat_id=status_msg.chat.id, message_id=status_msg.message_id
+                            chat_id=status_msg.chat.id, message_id=status_msg.message_id,
+                            parse_mode="Markdown"
                         )
                     
                     await asyncio.sleep(FORWARD_MSG_SLEEP)
                     
                     if batch_count == FORWARD_BATCH_SIZE:
+                        # FIX: parse_mode="Markdown" alag se add kiya gaya
                         await bot.edit_message_text(
                             f"⏳ Batch of {FORWARD_BATCH_SIZE} done. Pausing for {FORWARD_BATCH_SLEEP}s...\n"
                             f"Forwarded: `{total_forwarded}`\nSkipped: `{total_skipped}`",
-                            chat_id=status_msg.chat.id, message_id=status_msg.message_id
+                            chat_id=status_msg.chat.id, message_id=status_msg.message_id,
+                            parse_mode="Markdown"
                         )
                         await asyncio.sleep(FORWARD_BATCH_SLEEP)
                         batch_count = 0
 
                 except FloodWait as e:
-                    await bot.edit_message_text(f"⏳ FloodWait... sleeping for {e.value}s", chat_id=status_msg.chat.id, message_id=status_msg.message_id)
+                    # FIX: parse_mode="Markdown" alag se add kiya gaya
+                    await bot.edit_message_text(f"⏳ FloodWait... sleeping for {e.value}s", chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
                     await asyncio.sleep(e.value + 5)
                 except Exception as e:
                     print(f"❌ Error forwarding {msg.id}: {e}")
                     await asyncio.sleep(1)
 
         except Exception as e:
-            # FIX: Error message ko V1 code ticks (``) mein daal diya
+            # FIX: Error message ab PLAIN TEXT jayega
             await bot.edit_message_text(
-                f"❌ Job Failed:\n`{e}`",
+                f"❌ Job Failed:\n{e}",
                 chat_id=status_msg.chat.id, message_id=status_msg.message_id,
-                parse_mode="Markdown"
+                parse_mode=None
             )
         else:
+            # FIX: parse_mode="Markdown" alag se add kiya gaya
             await bot.edit_message_text(
                 f"✅ Forwarding Done!\n\nTotal Forwarded: `{total_forwarded}`\nTotal Skipped (Duplicates): `{total_skipped}`",
-                chat_id=status_msg.chat.id, message_id=status_msg.message_id
+                chat_id=status_msg.chat.id, message_id=status_msg.message_id,
+                parse_mode="Markdown"
             )
 
 async def run_dedupe_job(call):
     if db_pool is None: return await bot.send_message(call.message.chat.id, "❌ DB Not Connected")
     if batch_job_lock.locked(): return await bot.send_message(call.message.chat.id, "⏳ Another job is already running. Please wait.")
 
-    status_msg = await bot.send_message(call.message.chat.id, f"🧹 Cleaning duplicates from @MAZABACKUP01...")
+    # FIX: parse_mode="Markdown" alag se add kiya gaya
+    status_msg = await bot.send_message(call.message.chat.id, f"🧹 Cleaning duplicates from @MAZABACKUP01...", parse_mode="Markdown")
     seen_uids = set()
     deleted_count = 0
     batch_count = 0
@@ -318,9 +339,11 @@ async def run_dedupe_job(call):
                 rows = await conn.fetch("SELECT file_unique_id FROM target_channel_files")
                 seen_uids = {r['file_unique_id'] for r in rows}
 
+            # FIX: parse_mode="Markdown" alag se add kiya gaya
             await bot.edit_message_text(
                 f"Found `{len(seen_uids)}` unique files in DB. \n⏳ Scanning channel @MAZABACKUP01...",
-                chat_id=status_msg.chat.id, message_id=status_msg.message_id
+                chat_id=status_msg.chat.id, message_id=status_msg.message_id,
+                parse_mode="Markdown"
             )
 
             async for msg in app.get_chat_history(TARGET_FORWARD_CHANNEL):
@@ -335,15 +358,18 @@ async def run_dedupe_job(call):
                         await asyncio.sleep(BATCH_SLEEP_TIME)
                         
                         if batch_count == 100:
+                            # FIX: parse_mode="Markdown" alag se add kiya gaya
                             await bot.edit_message_text(
                                 f"⏳ Deleted {deleted_count} duplicates... \nPausing for 5s...",
-                                chat_id=status_msg.chat.id, message_id=status_msg.message_id
+                                chat_id=status_msg.chat.id, message_id=status_msg.message_id,
+                                parse_mode="Markdown"
                             )
                             await asyncio.sleep(5)
                             batch_count = 0
 
                     except FloodWait as e:
-                        await bot.edit_message_text(f"⏳ FloodWait... sleeping for {e.value}s", chat_id=status_msg.chat.id, message_id=status_msg.message_id)
+                        # FIX: parse_mode="Markdown" alag se add kiya gaya
+                        await bot.edit_message_text(f"⏳ FloodWait... sleeping for {e.value}s", chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
                         await asyncio.sleep(e.value + 5)
                     except Exception as e:
                         print(f"❌ Error deleting {msg.id}: {e}")
@@ -354,16 +380,18 @@ async def run_dedupe_job(call):
                         await conn.execute("INSERT INTO target_channel_files (file_unique_id, target_message_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", file_uid, msg.id)
 
         except Exception as e:
-            # FIX: Error message ko V1 code ticks (``) mein daal diya
+            # FIX: Error message ab PLAIN TEXT jayega
             await bot.edit_message_text(
-                f"❌ Job Failed:\n`{e}`", 
+                f"❌ Job Failed:\n{e}", 
                 chat_id=status_msg.chat.id, message_id=status_msg.message_id,
-                parse_mode="Markdown"
+                parse_mode=None
             )
         else:
+            # FIX: parse_mode="Markdown" alag se add kiya gaya
             await bot.edit_message_text(
                 f"✅ Deduplication Done!\nTotal Deleted: `{deleted_count}`",
-                chat_id=status_msg.chat.id, message_id=status_msg.message_id
+                chat_id=status_msg.chat.id, message_id=status_msg.message_id,
+                parse_mode="Markdown"
             )
             
 # ---------- INDEXER AUTO HANDLER ----------
@@ -410,9 +438,9 @@ async def run_the_index_job():
         print(f"✅ Access to {SOURCE_CHANNEL_ID} successful.")
     except Exception as e:
         print(f"❌ Indexing Pre-Check Error: {e}")
-        # FIX: Error message ko V1 code ticks (``) mein daal diya
-        return f"❌ Error: Could not access channel `{SOURCE_CHANNEL_ID}`. \n" \
-               f"Reason: `{e}`\n\n" \
+        # FIX: Yeh message ab PLAIN TEXT ban jayega.
+        return f"❌ Error: Could not access channel {SOURCE_CHANNEL_ID}. \n" \
+               f"Reason: {e}\n\n" \
                f"👉 Please make sure your bot/account (using SESSION_STRING) is a member of this channel and the ID is correct.", -1
     # --- End of new check ---
 
@@ -430,9 +458,10 @@ async def run_the_index_job():
                 await asyncio.sleep(0.05) 
         except Exception as e:
             print(f"❌ Indexing Error during history scan: {e}")
-            # FIX: Error message ko V1 code ticks (``) mein daal diya
-            return f"❌ Error during index scan: `{e}`", -1
+            # FIX: Yeh message ab PLAIN TEXT ban jayega
+            return f"❌ Error during index scan: {e}", -1
         
+        # FIX: Success message ko Markdown V1-safe banaya
         return f"✅ Indexing Done. Added: `{count_new}` new movies.", count_new
 
 async def run_index_job_for_telebot(call):
@@ -441,30 +470,31 @@ async def run_index_job_for_telebot(call):
         status_msg = await bot.send_message(call.message.chat.id, "⏳ Indexing... Please wait. (Checking channel access first...)")
         result_msg, count = await run_the_index_job()
         
-        # FIX: Ab escape karne ki zaroorat nahi, kyunki 'run_the_index_job'
-        # pehle se hi safe V1 Markdown bhej raha hai (backticks ke saath).
+        is_success = result_msg.startswith("✅")
+
+        # FIX: Agar success hai toh Markdown, warna PLAIN TEXT
         await bot.edit_message_text(
             result_msg, 
             chat_id=status_msg.chat.id, 
             message_id=status_msg.message_id,
-            parse_mode="Markdown" # Default V1
+            parse_mode="Markdown" if is_success else None
         )
     
     except Exception as e:
         print(f"❌ Telebot Job Error: {e}")
         if status_msg:
-            # FIX: Error message ko V1 code ticks (``) mein daal diya
+            # FIX: Error message ab PLAIN TEXT jayega
             await bot.edit_message_text(
-                f"❌ Job failed:\n`{e}`", 
+                f"❌ Job failed:\n{e}", 
                 chat_id=status_msg.chat.id, 
                 message_id=status_msg.message_id, 
-                parse_mode="Markdown"
+                parse_mode=None
             )
         else:
             await bot.send_message(
                 call.message.chat.id, 
-                f"❌ Job failed:\n`{e}`",
-                parse_mode="Markdown"
+                f"❌ Job failed:\n{e}",
+                parse_mode=None
             )
 
 @app.on_message(filters.command("index") & filters.user(ADMIN_IDS))
@@ -472,11 +502,12 @@ async def full_index(client, message):
     status = await message.reply("⏳ Indexing... (Checking channel access first...)")
     result_msg, count = await run_the_index_job()
     
-    # FIX: Pyrogram ko bhi ab 'Markdown' (V1) use karne ko bolenge,
-    # kyunki hamare sabhi messages (success aur error) V1-safe hain.
+    is_success = result_msg.startswith("✅")
+    
+    # FIX: Agar success hai toh Markdown, warna PLAIN TEXT (DISABLED)
     await status.edit(
         result_msg,
-        parse_mode=enums.ParseMode.MARKDOWN
+        parse_mode=enums.ParseMode.MARKDOWN if is_success else enums.ParseMode.DISABLED
     )
 
 @app.on_message(filters.command("cleanall") & filters.user(ADMIN_IDS))
@@ -536,10 +567,11 @@ async def web_server():
     site = web.TCPSite(runner, WEBHOOK_LISTEN, WEBHOOK_PORT)
     await site.start()
     
-    print(f"✅ Web server started at {WEBHOOK_LISTEN}:{WEBHOOK_PORT}")
+    print(f"✅ Web server started at {WEBHOOK_LISTEN}:{WEBOK_PORT}")
     await asyncio.Event().wait()
 
 async def main():
+    # ... (Environment variable checks) ...
     for v in [BOT_TOKEN, API_HASH, SESSION_STRING, DATABASE_URL]:
         if not v: print("❌ Missing ENV VARS"); exit(1)
     if not ADMIN_IDS or ADMIN_IDS == [0, 920892710]:
