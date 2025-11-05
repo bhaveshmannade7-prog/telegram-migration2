@@ -114,13 +114,9 @@ async def cb(call):
                 total = await conn.fetchval("SELECT COUNT(*) FROM indexed_movies")
         await bot.send_message(call.message.chat.id, f"📊 Total Movies in DB: `{total}`")
 
-    # === CHANGE: "info_index" AB ASLI MEIN INDEX KAREGA ===
     elif call.data == "info_index":
-        # Button click ko turant answer karein
         await bot.answer_callback_query(call.id, "🚀 Starting Full Index...")
-        # Indexing ko background task mein chalayein
         asyncio.create_task(run_index_job_for_telebot(call))
-    # === END CHANGE ===
 
     elif call.data == "info_clean":
         await bot.send_message(call.message.chat.id, "Go to *Saved Messages* and send `/cleanall`")
@@ -165,8 +161,6 @@ async def edited_post(client, message):
 
 # ---------- MANUAL COMMANDS / INDEXING LOGIC ----------
 
-# === NEW FUNCTION 1: Asli Indexing Ka Logic ===
-# Is function ko Pyrogram aur Telebot dono istemal karenge
 async def run_the_index_job():
     if db_pool is None:
         return "❌ DB Not Connected", -1 # Error message, count
@@ -177,7 +171,6 @@ async def run_the_index_job():
     async with batch_job_lock:
         count_new = 0
         try:
-            # Pyrogram app (user account) se history fetch karein
             async for m in app.get_chat_history(SOURCE_CHANNEL_ID):
                 uid = get_file_id(m)
                 if uid:
@@ -186,25 +179,18 @@ async def run_the_index_job():
                         if not exists:
                             await conn.execute("INSERT INTO indexed_movies VALUES ($1,$2) ON CONFLICT DO NOTHING", m.id, uid)
                             count_new += 1
-                await asyncio.sleep(0.05) # Thoda fast kar diya
+                await asyncio.sleep(0.05) 
         except Exception as e:
             print(f"❌ Indexing Error: {e}")
             return f"❌ Error during index: {e}", -1
         
         return f"✅ Indexing Done. Added: `{count_new}` new movies.", count_new
 
-# === NEW FUNCTION 2: Telebot ke liye wrapper ===
-# Yeh function telebot ko status message bhej ne aur edit karne mein madad karta hai
 async def run_index_job_for_telebot(call):
     status_msg = None
     try:
-        # User ko status message bhejein
         status_msg = await bot.send_message(call.message.chat.id, "⏳ Indexing... Please wait.")
-        
-        # Asli job chalayein
         result_msg, count = await run_the_index_job()
-        
-        # Status message ko result se edit karein
         await bot.edit_message_text(result_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id)
     
     except Exception as e:
@@ -214,13 +200,10 @@ async def run_index_job_for_telebot(call):
         else:
             await bot.send_message(call.message.chat.id, f"❌ Job failed: {e}")
 
-# === UPDATED: Pyrogram /index command ===
 @app.on_message(filters.command("index") & filters.user(ADMIN_IDS))
 async def full_index(client, message):
     status = await message.reply("⏳ Indexing...")
-    # Asli job chalayein
     result_msg, count = await run_the_index_job()
-    # Result ko edit karein
     await status.edit(result_msg)
 
 
@@ -261,17 +244,43 @@ async def refresh(client, message):
     await msg.edit_caption(new_cap)
     await message.reply("✅ Refreshed")
 
-# ---------- WEB SERVER ----------
+# ---------- ============ NEW WEBHOOK CODE ============ ----------
+
+# Yahan apna Render URL daalein. Aapke log se mila:
+WEBHOOK_URL_BASE = "https://maza-cleaner.onrender.com" 
+WEBHOOK_URL_PATH = f"/bot/{BOT_TOKEN}"
+WEBHOOK_LISTEN = '0.0.0.0'
+WEBHOOK_PORT = int(os.environ.get("PORT", 8080))
+
+async def handle_webhook(request):
+    """
+    Telebot updates ko process karne ke liye Webhook handler.
+    """
+    try:
+        request_body_json = await request.json()
+        update = types.Update.de_json(request_body_json)
+        asyncio.create_task(bot.process_new_updates([update]))
+        return web.Response(status=200)
+    except Exception as e:
+        print(f"❌ Webhook Error: {e}")
+        return web.Response(status=500)
+
 async def web_server():
+    """
+    Web server jo health check ('/') aur bot webhook ('/bot/TOKEN') sunega.
+    """
     app_web = web.Application()
     app_web.router.add_get("/", lambda r: web.Response(text="Bot Alive ✅"))
+    app_web.router.add_post(WEBHOOK_URL_PATH, handle_webhook)
+    
     runner = web.AppRunner(app_web)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080)))
+    site = web.TCPSite(runner, WEBHOOK_LISTEN, WEBHOOK_PORT)
     await site.start()
-    await asyncio.Event().wait()
+    
+    print(f"✅ Web server started at {WEBHOOK_LISTEN}:{WEBHOOK_PORT}")
+    await asyncio.Event().wait() # Server ko hamesha chalu rakhein
 
-# ---------- MAIN ----------
 async def main():
     for v in [BOT_TOKEN, API_HASH, SESSION_STRING, DATABASE_URL]:
         if not v:
@@ -282,16 +291,27 @@ async def main():
         print("❌ ADMIN_ID environment variable is missing or invalid!")
         exit(1)
 
+    # 1. Database shuru karein
     await init_database()
 
+    # 2. Pyrogram Client (app) shuru karein
     await app.start()
-    await bot.delete_webhook(drop_pending_updates=True) 
+    print("✅ Pyrogram Client Running...")
 
-    print("✅ Bots Running...\n")
-    await asyncio.gather(
-        bot.polling(non_stop=True, timeout=60),
-        web_server()
-    )
+    # 3. Telebot (bot) ke liye Webhook set karein
+    await bot.remove_webhook()
+    await asyncio.sleep(0.5) 
+    webhook_set = await bot.set_webhook(url=f"{WEBHOOK_URL_BASE}{WEBHOOK_URL_PATH}")
+    
+    if webhook_set:
+        print("✅ Telebot Webhook Set!")
+    else:
+        print("❌❌ FAILED TO SET WEBHOOK! ❌❌")
+        exit(1)
+
+    # 4. Web Server shuru karein (Yeh 'bot.polling' ki jagah lega)
+    await web_server()
 
 if __name__ == "__main__":
     asyncio.run(main())
+
