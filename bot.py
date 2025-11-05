@@ -458,10 +458,34 @@ async def refresh_command(client, message):
 # --- मुख्य फ़ंक्शन ---
 async def main():
     """बॉट, वेब सर्वर और इंडेक्सर को शुरू करता है।"""
-    # ज़रूरी वेरिएबल्स की जाँच
-    if not all([BOT_TOKEN, API_ID, API_HASH, SESSION_STRING, DATABASE_URL, ADMIN_ID, SOURCE_CHANNEL_ID]):
-        print("❌ एरर: सभी Environment Variables (BOT_TOKEN, API_ID, API_HASH, SESSION_STRING, DATABASE_URL, ADMIN_ID, SOURCE_CHANNEL_ID) ज़रूरी हैं!")
-        exit(1)
+    
+    # *** फिक्स: ज़्यादा मज़बूत चेकिंग ***
+    print("ℹ️ Environment Variables की जाँच की जा रही है...")
+    
+    # ये स्ट्रिंग्स खाली नहीं हो सकतीं
+    string_vars = {
+        "BOT_TOKEN": BOT_TOKEN,
+        "API_HASH": API_HASH,
+        "SESSION_STRING": SESSION_STRING,
+        "DATABASE_URL": DATABASE_URL
+    }
+    for var_name, value in string_vars.items():
+        if not value:
+            print(f"❌ एरर: {var_name} Environment Variable नहीं मिला या खाली है!")
+            exit(1)
+            
+    # ये नंबर्स 0 नहीं हो सकते
+    int_vars = {
+        "ADMIN_ID": ADMIN_ID,
+        "API_ID": API_ID,
+        "SOURCE_CHANNEL_ID": SOURCE_CHANNEL_ID
+    }
+    for var_name, value in int_vars.items():
+        if value == 0:
+            print(f"❌ एरर: {var_name} Environment Variable नहीं मिला या 0 पर सेट है!")
+            exit(1)
+            
+    print("✅ सभी ज़रूरी Environment Variables मौजूद हैं।")
 
     # 1. डेटाबेस शुरू करें
     if not await init_database():
