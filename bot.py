@@ -449,7 +449,7 @@ async def run_the_index_job():
         return f"✅ Indexing Done. Added: `{count_new}` new movies.", count_new
 
 # =================================================================
-# === YAHAN HAIN ASLI CHANGES ===
+# === YAHAN HAIN PARSE_MODE WALE FIXES ===
 # =================================================================
 async def run_index_job_for_telebot(call):
     status_msg = None
@@ -486,7 +486,7 @@ async def run_index_job_for_telebot(call):
                 parse_mode=None # <-- PLAIN TEXT
             )
 # =================================================================
-# === CHANGES END HERE ===
+# === PARSE_MODE FIXES END HERE ===
 # =================================================================
 
 @app.on_message(filters.command("index") & filters.user(ADMIN_IDS))
@@ -541,8 +541,17 @@ async def refresh(client, message):
 
 # ---------- ============ NEW WEBHOOK CODE ============ ----------
 
+# =================================================================
+# === YAHAN HAI ASLI FIX (URL TYPO) ===
+# =================================================================
 # Yahan apna Render URL daalein. Aapke log se mila:
-WEBHOOK_URL_BASE = "https.Maza-cleaner.onrender.com" 
+# GALAT THA: "https.Maza-cleaner.onrender.com"
+# SAHI HAI: "https://maza-cleaner.onrender.com"
+WEBHOOK_URL_BASE = "https://maza-cleaner.onrender.com" 
+# =================================================================
+# === FIX ENDS HERE ===
+# =================================================================
+
 WEBHOOK_URL_PATH = f"/bot/{BOT_TOKEN}"
 WEBHOOK_LISTEN = '0.0.0.0'
 WEBHOOK_PORT = int(os.environ.get("PORT", 8080))
@@ -596,13 +605,15 @@ async def main():
     # 3. Telebot (bot) ke liye Webhook set karein
     await bot.remove_webhook()
     await asyncio.sleep(0.5) 
+    
+    print(f"Setting webhook to: {WEBHOOK_URL_BASE}{WEBHOOK_URL_PATH}") # Debugging ke liye
     webhook_set = await bot.set_webhook(url=f"{WEBHOOK_URL_BASE}{WEBHOOK_URL_PATH}")
     
     if webhook_set:
         print("✅ Telebot Webhook Set!")
     else:
-        print("❌❌ FAILED TO SET WEBHOOK! AAAA")
-        exit(1)
+        print("❌❌ FAILED TO SET WEBHOOK! Check URL and BOT_TOKEN. ❌❌")
+        exit(1) # Bot ko crash kar do agar webhook set na ho
 
     # 4. Web Server shuru karein (Yeh 'bot.polling' ki jagah lega)
     await web_server()
