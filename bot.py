@@ -440,7 +440,9 @@ async def run_the_index_job():
         except Exception as e:
             # This is now a fallback error
             print(f"❌ Indexing Error during history scan: {e}")
-            return f"❌ Error during index scan: {e}", -1
+            # --- YAHAN HAI FIX ---
+            # Humne {e} ko backticks (`) mein wrap kar diya hai
+            return f"❌ Error during index scan: `{e}`", -1
         
         return f"✅ Indexing Done. Added: `{count_new}` new movies.", count_new
 
@@ -454,9 +456,10 @@ async def run_index_job_for_telebot(call):
     except Exception as e:
         print(f"❌ Telebot Job Error: {e}")
         if status_msg:
-            await bot.edit_message_text(f"❌ Job failed: {e}", chat_id=status_msg.chat.id, message_id=status_msg.message_id)
+            # Yahan bhi error ko backticks mein daalna safe hai
+            await bot.edit_message_text(f"❌ Job failed: `{e}`", chat_id=status_msg.chat.id, message_id=status_msg.message_id)
         else:
-            await bot.send_message(call.message.chat.id, f"❌ Job failed: {e}")
+            await bot.send_message(call.message.chat.id, f"❌ Job failed: `{e}`")
 
 @app.on_message(filters.command("index") & filters.user(ADMIN_IDS))
 async def full_index(client, message):
