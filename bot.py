@@ -14,7 +14,12 @@ from pyrogram.errors import FloodWait, MessageNotModified
 
 # --- CONFIG (ENV VARS) ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
+
+# === CHANGE 1: ADMIN LIST ===
+# Purane ADMIN_ID ko aur naye ID ko ek list mein daal diya hai
+MAIN_ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
+ADMIN_IDS = [MAIN_ADMIN_ID, 920892710] 
+# === END CHANGE 1 ===
 
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
@@ -90,9 +95,11 @@ def get_main_menu():
     return m
 
 # ---------- TELEBOT ----------
+# === CHANGE 2: TELEBOT HANDLERS ===
 @bot.message_handler(commands=['start', 'help'])
 async def start_cmd(message):
-    if message.from_user.id != ADMIN_ID:
+    # Check if user is in the admin list
+    if message.from_user.id not in ADMIN_IDS:
         return await bot.reply_to(message, "⛔ Not Authorized")
     await bot.reply_to(message,
         "👋 *Admin Menu*",
@@ -101,7 +108,8 @@ async def start_cmd(message):
 
 @bot.callback_query_handler(func=lambda c: True)
 async def cb(call):
-    if call.from_user.id != ADMIN_ID:
+    # Check if user is in the admin list
+    if call.from_user.id not in ADMIN_IDS:
         return await bot.answer_callback_query(call.id, "⛔ Not Allowed", show_alert=True)
 
     if call.data == "show_stats":
@@ -119,6 +127,8 @@ async def cb(call):
 
     elif call.data == "info_refresh":
         await bot.send_message(call.message.chat.id, "Reply a movie in channel & send `/refresh`")
+# === END CHANGE 2 ===
+
 
 # ---------- INDEXER AUTO HANDLER ----------
 async def process_post(msg):
@@ -154,7 +164,8 @@ async def edited_post(client, message):
     await process_post(message)
 
 # ---------- MANUAL COMMANDS ----------
-@app.on_message(filters.command("index") & filters.user(ADMIN_ID))
+# === CHANGE 3: PYROGRAM HANDLERS ===
+@app.on_message(filters.command("index") & filters.user(ADMIN_IDS))
 async def full_index(client, message):
     if db_pool is None:
         return await message.reply("❌ DB Not Connected")
@@ -176,7 +187,7 @@ async def full_index(client, message):
             await asyncio.sleep(0.1)
         await status.edit(f"✅ Done. Added: `{count_new}`")
 
-@app.on_message(filters.command("cleanall") & filters.user(ADMIN_ID))
+@app.on_message(filters.command("cleanall") & filters.user(ADMIN_IDS))
 async def clean_all(client, message):
     if db_pool is None:
         return await message.reply("❌ DB Not Connected")
@@ -204,7 +215,7 @@ async def clean_all(client, message):
 
         await status.edit("✅ Clean Done!")
 
-@app.on_message(filters.command("refresh") & filters.user(ADMIN_ID) & filters.chat(SOURCE_CHANNEL_ID))
+@app.on_message(filters.command("refresh") & filters.user(ADMIN_IDS) & filters.chat(SOURCE_CHANNEL_ID))
 async def refresh(client, message):
     if not message.reply_to_message:
         return await message.reply("Reply a movie")
@@ -212,6 +223,7 @@ async def refresh(client, message):
     new_cap = clean_caption(msg.caption) + CAPTION_FOOTER
     await msg.edit_caption(new_cap)
     await message.reply("✅ Refreshed")
+# === END CHANGE 3 ===
 
 # ---------- WEB SERVER ----------
 async def web_server():
@@ -229,11 +241,15 @@ async def main():
         if not v:
             print("❌ Missing ENV VARS")
             exit(1)
+            
+    if not ADMIN_IDS or ADMIN_IDS == [0, 920892710]:
+        print("❌ ADMIN_ID environment variable is missing or invalid!")
+        exit(1)
 
     await init_database()
 
     await app.start()
-    await bot.delete_webhook(drop_pending_updates=True)  # <-- FIX 409 ERROR ✅
+    await bot.delete_webhook(drop_pending_updates=True) 
 
     print("✅ Bots Running...\n")
     await asyncio.gather(
