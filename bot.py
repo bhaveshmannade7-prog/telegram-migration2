@@ -136,7 +136,7 @@ async def start_cmd(message):
     )
 
 # =================================================================
-# === DIAGNOSTIC COMMAND (AB 100% CRASH-PROOF) ===
+# === DIAGNOSTIC COMMAND (FIXED: Ab asli error batayega) ===
 # =================================================================
 @bot.callback_query_handler(func=lambda c: c.data == "run_whoami")
 async def whoami_cb(call):
@@ -161,27 +161,32 @@ async def whoami_cb(call):
         
     except Exception as e:
         # =================================================
-        # === AAKHRI FIX (NUCLEAR OPTION) ===
-        # Hum `e` (error) ko bhej hi nahi rahe hain.
-        # Hum ek 100% safe, hardcoded message bhejenge.
+        # === FIX: Asli error dikhayein ===
         # =================================================
         print(f"❌ PYROGRAM/API ERROR in whoami_cb: {e}") # Asli error yahaan log karein
 
-        hardcoded_error_message = (
-            "❌ SESSION STRING / API ERROR ❌\n\n"
-            "Pyrogram client start nahi ho pa raha hai.\n\n"
-            "👉 Iska 99% kaaran hai:\n"
-            "1. SESSION_STRING galat ya expired hai.\n"
-            "2. API_ID galat hai.\n"
-            "3. API_HASH galat hai.\n\n"
-            "Kripya Render mein teeno environment variables ko check karein aur bot ko restart karein."
+        # Error ko user-friendly tareeke se format karein
+        error_str = str(e).replace('<', '[').replace('>', ']') # HTML/Markdown se bachne ke liye
+
+        error_message = (
+            "❌ **SESSION STRING / API ERROR** ❌\n\n"
+            "Pyrogram client `get_me()` command fail kar gaya.\n\n"
+            "**Asli Error:**\n"
+            f"`{error_str}`\n\n"
+            "--- \n"
+            "**Yeh Error Kyun Aata Hai?**\n\n"
+            "1.  **`AuthKeyUnregistered`**: SESSION_STRING galat ya expired hai. Naya generate karein.\n"
+            "2.  **`ApiIdInvalid`**: API_ID galat hai.\n"
+            "3.  **`ApiIdPublishedFlood`**: API_HASH galat hai.\n"
+            "4.  **`UserDeactivated`**: Yeh account ban ho gaya hai.\n\n"
+            "👉 Kripya apne Render environment variables (SESSION_STRING, API_ID, API_HASH) ko check karein aur bot ko restart karein."
         )
         
         await bot.edit_message_text(
-            hardcoded_error_message,
+            error_message,
             chat_id=status_msg.chat.id, 
             message_id=status_msg.message_id,
-            parse_mode=None # Force plain text
+            parse_mode="Markdown" # Use Markdown
         )
 # =================================================================
 # === /whoami COMMAND END ===
@@ -245,15 +250,24 @@ async def handle_footer_text(message):
 # === JOB FUNCTIONS (Error handling fix) ===
 # =================================================================
 
-# Hardcoded error message function (taaki code repeat na ho)
+# FIX: Is function ko update kiya gaya hai taaki yeh asli error ko message mein dikhaye
 def get_hardcoded_error_message(job_name: str, e: Exception) -> str:
     print(f"❌ ERROR in {job_name}: {e}") # Asli error log karein
+    
+    # Error ko HTML/Markdown se safe banaya
+    error_str = str(e).replace('<', '[').replace('>', ']') 
+    
     return (
         f"❌ {job_name} Job Fail Hua ❌\n\n"
-        "Pyrogram client fail ho gaya.\n\n"
-        "👉 Please 'Debug Session' button daba kar check karein ki "
-        "SESSION_STRING, API_ID, aur API_HASH sahi hain ya nahi."
+        f"**Asli Error:**\n`{error_str}`\n\n"
+        "--- \n"
+        "**Sambhavit Kaaran (Suggestion):**\n"
+        "Ho sakta hai SESSION_STRING, API_ID, ya API_HASH galat ho. "
+        "Kripya 'Debug Session' button se check karein.\n\n"
+        "👉 Agar error 'ChatAdminRequired' ya 'PeerIdInvalid' jaisa hai, "
+        f"toh check karein ki aapka account (`SESSION_STRING` wala) channel (`{SOURCE_CHANNEL_ID}`) mein Admin hai ya nahi."
     )
+
 
 async def run_add_footer_job(message, footer_text):
     if db_pool is None: return await bot.send_message(message.chat.id, "❌ DB Not Connected")
@@ -282,7 +296,7 @@ async def run_add_footer_job(message, footer_text):
                     print(f"❌ Error adding footer to {msg.id}: {e}"); total_failed += 1; await asyncio.sleep(1)
         except Exception as e:
             error_msg = get_hardcoded_error_message("Add Footer", e)
-            await bot.edit_message_text(error_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode=None)
+            await bot.edit_message_text(error_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown") # FIX: Markdown
         else:
             await bot.edit_message_text(f"✅ Footer Add Done!\n\nProcessed: `{total_processed}`\nFailed: `{total_failed}`", chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
 
@@ -313,7 +327,7 @@ async def run_clean_all_job(call):
                         print(f"❌ Error cleaning {msg.id}: {e}"); await asyncio.sleep(1)
         except Exception as e:
             error_msg = get_hardcoded_error_message("Clean Captions", e)
-            await bot.edit_message_text(error_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode=None)
+            await bot.edit_message_text(error_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown") # FIX: Markdown
         else:
             await bot.edit_message_text(f"✅ Caption Cleaning Done!\n\nScanned: `{total_processed}`\nCaptions Cleaned: `{total_cleaned}`", chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
 
@@ -368,7 +382,7 @@ async def run_dedupe_job(call):
         if conn: 
             await db_pool.release(conn) # <-- FIX 3: Error aane par bhi release karein
         error_msg = get_hardcoded_error_message("Dedupe", e)
-        await bot.edit_message_text(error_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode=None)
+        await bot.edit_message_text(error_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown") # FIX: Markdown
 
 async def run_forwarding_job(message, source_chat_id):
     if db_pool is None: return await bot.send_message(message.chat.id, "❌ DB Not Connected")
@@ -404,7 +418,7 @@ async def run_forwarding_job(message, source_chat_id):
                     print(f"❌ Error forwarding {msg.id}: {e}")
         except Exception as e:
             error_msg = get_hardcoded_error_message("Forwarding", e)
-            await bot.edit_message_text(error_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode=None)
+            await bot.edit_message_text(error_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown") # FIX: Markdown
         else:
             await bot.edit_message_text(f"✅ Forwarding Done!\n\nTotal Forwarded: `{total_forwarded}`\nTotal Skipped: `{total_skipped}`", chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
             
@@ -458,10 +472,13 @@ async def run_the_index_job():
                 await asyncio.sleep(0.05) 
         except Exception as e:
             print(f"❌ Indexing Error during history scan: {e}")
-            return f"❌ Error during index scan: {e}", -1
+            # FIX: Yahaan naya, detailed error message function use kiya gaya hai
+            error_msg = get_hardcoded_error_message("Index History Scan", e)
+            return error_msg, -1
         
         return f"✅ Indexing Done. Added/Checked all messages. `{count_new}` new movies added to DB.", count_new
 
+# FIX: Is function ko update kiya gaya hai taaki yeh asli error dikhaye
 async def run_index_job_for_telebot(call):
     status_msg = None
     try:
@@ -472,11 +489,21 @@ async def run_index_job_for_telebot(call):
         if is_success:
             await bot.edit_message_text(result_msg, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
         else:
-            # Error aaya, hardcoded message istemaal karein
-            # Asli error 'result_msg' mein hai, use log karein
+            # =================================================
+            # === FIX: Asli error dikhayein ===
+            # =================================================
+            # 'result_msg' mein ab hamare Fix 1 aur Fix 3 se 
+            # pehle se hi ek detailed error message hai.
+            # Use seedha bhej dein.
+            
             print(f"❌ FULL INDEX JOB FAILED: {result_msg}")
-            hardcoded_error = get_hardcoded_error_message("Full Index", Exception(result_msg))
-            await bot.edit_message_text(hardcoded_error, chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode=None)
+            
+            await bot.edit_message_text(
+                result_msg, # Yeh 'run_the_index_job' se aaya hai
+                chat_id=status_msg.chat.id, 
+                message_id=status_msg.message_id,
+                parse_mode="Markdown" 
+            )
     
     except Exception as e:
         # Yeh tabhi aayega agar 'bot.send_message' fail ho
