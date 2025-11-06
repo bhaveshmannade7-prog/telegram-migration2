@@ -15,10 +15,7 @@ import uvicorn
 # Configuration
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 WEBHOOK_URL = os.environ.get('WEBHOOK_URL')
-
-# ValueError fix (from previous error)
 ADMIN_IDS = [int(id.strip()) for id in os.environ.get('ADMIN_IDS', '').split(',') if id.strip()]
-
 CHANNEL_ID = -1002417767287
 CHANNEL_USERNAME = "@MAZABACKUP01"
 JSON_DB_FILE = "movies_database.json"
@@ -98,29 +95,23 @@ class MovieDatabase:
             self.data["movies"].pop(index)
             self.data["stats"]["total_movies"] -= 1
             self.data["stats"]["duplicates_removed"] += 1
-            self.save_database()
+            # Save handled by the caller function (handle_duplicates)
             return True
         return False
     
     def set_watermark(self, watermark_text):
-        """Set custom watermark for captions"""
         self.data["watermark"]["text"] = watermark_text
         self.data["watermark"]["enabled"] = True
-        
-        # Regex fix
         usernames = re.findall(r'@\w+', watermark_text)
         links = re.findall(r'(?:https?://)?(?:www\.)?(?:t\.me/|telegram\.me/)[\w\.-]+(?:/[\w-]+)*', watermark_text)
-        
         self.data["watermark"]["usernames"] = list(set(usernames))
         self.data["watermark"]["links"] = list(set(links))
         self.save_database()
     
     def get_watermark(self):
-        """Get current watermark settings"""
         return self.data["watermark"]
     
     def disable_watermark(self):
-        """Disable watermark"""
         self.data["watermark"]["enabled"] = False
         self.save_database()
     
@@ -131,53 +122,45 @@ class MovieDatabase:
         if stat_type in self.data["stats"]:
             self.data["stats"][stat_type] += increment
         self.data["stats"]["last_updated"] = datetime.now().isoformat()
-        self.save_database()
+        # Save handled by the caller function to avoid frequent writes
 
 # Initialize Database
 db = MovieDatabase(JSON_DB_FILE)
 
 # Utility Functions
 def calculate_file_hash(file_id, caption):
-    """Calculate unique hash for duplicate detection"""
     content = f"{file_id}_{caption}"
     return hashlib.md5(content.encode()).hexdigest()
 
 def clean_caption(caption, preserve_watermark=True):
-    """Remove usernames and links from caption while preserving watermark"""
     if not caption:
-        return None
+        return "" # Return empty string instead of None
     
     watermark_config = db.get_watermark()
     protected_items = []
     
     if preserve_watermark and watermark_config["enabled"]:
-        # Store protected usernames and links temporarily
         protected_items = watermark_config["usernames"] + watermark_config["links"]
     
-    # Create temporary placeholders for protected items
     placeholder_map = {}
     for idx, item in enumerate(protected_items):
         placeholder = f"__PROTECTED_{idx}__"
         caption = caption.replace(item, placeholder)
         placeholder_map[placeholder] = item
     
-    # Regex fixes
     caption = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', caption)
     caption = re.sub(r'www\.(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),])+', '', caption)
     caption = re.sub(r'@\w+', '', caption)
     caption = re.sub(r't\.me/\S+', '', caption)
     
-    # Restore protected items
     for placeholder, original in placeholder_map.items():
         caption = caption.replace(placeholder, original)
     
-    # Clean extra spaces
     caption = re.sub(r'\s+', ' ', caption).strip()
     
-    return caption if caption else None
+    return caption
 
 def add_watermark_to_caption(caption):
-    """Add watermark to caption"""
     watermark_config = db.get_watermark()
     
     if not watermark_config["enabled"] or not watermark_config["text"]:
@@ -186,13 +169,11 @@ def add_watermark_to_caption(caption):
     caption = caption or ""
     watermark = watermark_config["text"]
     
-    # Check if watermark already exists
+    # User Requirement: Don't add if already present
     if watermark in caption:
         return caption
     
-    # Add watermark at the end
     if caption:
-        # SyntaxError fix (from previous error)
         return f"""{caption}
 
 {watermark}"""
@@ -200,18 +181,11 @@ def add_watermark_to_caption(caption):
         return watermark
 
 async def is_admin(user_id):
-    """Check if user is admin"""
     return user_id in ADMIN_IDS
 
 # Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command handler"""
     user = update.effective_user
-    
-    # === FIX: MARKDOWN ERROR FIX ===
-    # Humne yahan se parse_mode hata diya hai taaki special characters
-    # (jaise user ke naam me '_') error na dein.
-    
     welcome_text = f"""
 🎬 Welcome {user.first_name}!
 
@@ -238,22 +212,16 @@ Auto Features:
 
 Protected: Sirf authorized admins hi commands use kar sakte hain.
     """
-    # parse_mode='Markdown' ko hata diya gaya hai
-    await update.message.reply_text(welcome_text) 
+    await update.message.reply_text(welcome_text) # Removed parse_mode to prevent errors
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Help command handler"""
     help_text = """
 📚 **Bot Commands Guide:**
 
 **1. Watermark Management** 🏷️
    `/setwatermark` - Apna channel username/link set karo
-   Example: Watermark text bhejo jaise "@YourChannel"
-   
-   `/addwatermark` - Existing sabhi movies me watermark add karo (100 batch)
-   
+   `/addwatermark` - Existing sabhi movies me watermark add karo
    `/removewatermark` - Watermark feature disable karo
-   
    `/viewwatermark` - Current watermark settings dekho
 
 **2. Caption Cleaning** ✨
@@ -274,17 +242,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
    `/refresh` - Database refresh karo
    `/backup` - JSON backup download karo
 
-**Auto Features:**
-• New movies automatically watermark ke saath save hoti hain
-• Cleaning karte waqt aapka watermark protected rahta hai
-• Duplicate detection automatic hai
-
 **Note:** Sabhi commands admin-only hain.
     """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
 async def set_watermark_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start watermark setting process"""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Ye command sirf admins ke liye hai!")
         return ConversationHandler.END
@@ -292,48 +254,30 @@ async def set_watermark_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(
         "🏷️ **Watermark Setup**\n\n"
         "Apna watermark text bhejo (channel username, link, ya koi bhi text):\n\n"
-        "**Examples:**\n"
-        "• @YourChannel\n"
-        "• Join: @YourChannel\n"
-        "• t.me/YourChannel\n"
-        "• Follow us: @YourChannel | t.me/YourBackup\n\n"
         "Cancel karne ke liye /cancel type karo.",
         parse_mode='Markdown'
     )
     return WAITING_FOR_WATERMARK
 
 async def set_watermark_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive and save watermark"""
     watermark_text = update.message.text.strip()
-    
-    if len(watermark_text) > 500:
-        await update.message.reply_text("❌ Watermark bahut lamba hai! Maximum 500 characters allowed.")
-        return WAITING_FOR_WATERMARK
-    
     db.set_watermark(watermark_text)
-    
     watermark_config = db.get_watermark()
     
     await update.message.reply_text(
         f"✅ **Watermark Successfully Set!**\n\n"
         f"**Watermark Text:**\n{watermark_text}\n\n"
         f"**Protected Usernames:** {', '.join(watermark_config['usernames']) or 'None'}\n"
-        f"**Protected Links:** {', '.join(watermark_config['links']) or 'None'}\n\n"
-        f"Ab ye watermark:\n"
-        f"• Cleaning ke dauran safe rahega\n"
-        f"• Naye movies me automatically add hoga\n"
-        f"• `/addwatermark` se existing movies me add kar sakte ho",
+        f"**Protected Links:** {', '.join(watermark_config['links']) or 'None'}",
         parse_mode='Markdown'
     )
     return ConversationHandler.END
 
 async def cancel_watermark(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel watermark setting"""
     await update.message.reply_text("❌ Watermark setup cancelled.")
     return ConversationHandler.END
 
 async def view_watermark(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View current watermark settings"""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Ye command sirf admins ke liye hai!")
         return
@@ -348,23 +292,14 @@ async def view_watermark(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🏷️ **Current Watermark Settings**
 
 **Status:** {'✅ Enabled' if watermark_config['enabled'] else '❌ Disabled'}
-
 **Watermark Text:**
 {watermark_config['text']}
-
 **Protected Usernames:** {', '.join(watermark_config['usernames']) or 'None'}
-
 **Protected Links:** {', '.join(watermark_config['links']) or 'None'}
-
-**Features:**
-• Auto-add to new movies: ✅
-• Protected during cleaning: ✅
     """
-    
     await update.message.reply_text(status_text, parse_mode='Markdown')
 
 async def remove_watermark(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Remove/disable watermark"""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Ye command sirf admins ke liye hai!")
         return
@@ -373,13 +308,11 @@ async def remove_watermark(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Watermark disabled ho gaya hai!")
 
 async def add_watermark_to_movies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add watermark to all existing movies in batches"""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Ye command sirf admins ke liye hai!")
         return
     
     watermark_config = db.get_watermark()
-    
     if not watermark_config["enabled"]:
         await update.message.reply_text("❌ Pehle watermark set karo using /setwatermark")
         return
@@ -389,139 +322,106 @@ async def add_watermark_to_movies(update: Update, context: ContextTypes.DEFAULT_
     movies = db.get_all_movies()
     total = len(movies)
     added = 0
-    batch_size = 100
     
     try:
-        for i in range(0, total, batch_size):
-            batch = movies[i:i+batch_size]
-            for movie in batch:
-                try:
-                    # Get current message
-                    message = await context.bot.forward_message(
-                        chat_id=update.effective_chat.id,
-                        from_chat_id=CHANNEL_ID,
-                        message_id=movie["message_id"]
+        for movie in movies:
+            try:
+                current_caption = movie.get("caption", "")
+                
+                # Check if watermark already exists (User Requirement)
+                if watermark_config["text"] in current_caption:
+                    continue
+                    
+                new_caption = add_watermark_to_caption(current_caption)
+                
+                if new_caption != current_caption:
+                    await context.bot.edit_message_caption(
+                        chat_id=CHANNEL_ID,
+                        message_id=movie["message_id"],
+                        caption=new_caption
                     )
-                    
-                    # Delete forwarded message
-                    await context.bot.delete_message(
-                        chat_id=update.effective_chat.id,
-                        message_id=message.message_id
-                    )
-                    
-                    if message.caption or message.video or message.document:
-                        current_caption = message.caption or ""
-                        
-                        # Check if watermark already exists
-                        if watermark_config["text"] not in current_caption:
-                            new_caption = add_watermark_to_caption(current_caption)
-                            
-                            await context.bot.edit_message_caption(
-                                chat_id=CHANNEL_ID,
-                                message_id=movie["message_id"],
-                                caption=new_caption
-                            )
-                            added += 1
-                            db.update_stats("watermarks_added")
-                    
+                    movie["caption"] = new_caption # Update in-memory
+                    added += 1
+                    db.update_stats("watermarks_added")
                     await asyncio.sleep(0.5)
                     
-                except Exception as e:
-                    print(f"Error adding watermark to {movie['message_id']}: {e}")
-                    continue
-            
-            await status_msg.edit_text(
-                f"🏷️ Progress: {min(i+batch_size, total)}/{total} processed...\n"
-                f"Added: {added}"
-            )
+            except Exception as e:
+                print(f"Error adding watermark to {movie['message_id']}: {e}")
+                if "Message can't be edited" in str(e):
+                    await status_msg.edit_text(f"❌ **PERMISSION ERROR!**\n\nBot ko Channel mein **'Edit messages'** ki permission dein.\nAborting operation.")
+                    db.save_database() # Save partial progress
+                    return
+                continue
         
+        db.save_database() # Save all changes to JSON file
         await status_msg.edit_text(
             f"✅ **Watermark Addition Complete!**\n\n"
             f"**Total Movies:** {total}\n"
             f"**Watermark Added:** {added}\n"
-            f"**Already Had:** {total - added}\n\n"
-            f"**Watermark:** {watermark_config['text']}"
+            f"**Already Had:** {total - added}"
         )
     
     except Exception as e:
         await status_msg.edit_text(f"❌ Error: {str(e)}")
 
 async def clean_captions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Clean captions from all movies in batches while preserving watermark"""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Ye command sirf admins ke liye hai!")
         return
     
-    watermark_config = db.get_watermark()
-    status_msg = await update.message.reply_text(
-        f"🔄 Caption cleaning shuru ho rahi hai...\n"
-        f"{'🏷️ Watermark protected rahega!' if watermark_config['enabled'] else ''}"
-    )
+    status_msg = await update.message.reply_text("🔄 Caption cleaning shuru ho rahi hai...")
     
     movies = db.get_all_movies()
     total = len(movies)
     cleaned = 0
-    batch_size = 100
     
     try:
-        for i in range(0, total, batch_size):
-            batch = movies[i:i+batch_size]
-            for movie in batch:
-                try:
-                    message = await context.bot.forward_message(
-                        chat_id=update.effective_chat.id,
-                        from_chat_id=CHANNEL_ID,
-                        message_id=movie["message_id"]
+        for movie in movies:
+            try:
+                original_caption = movie.get("caption", "")
+                
+                if not original_caption:
+                    continue
+                    
+                new_caption = clean_caption(original_caption, preserve_watermark=True)
+                
+                if new_caption != original_caption:
+                    await context.bot.edit_message_caption(
+                        chat_id=CHANNEL_ID,
+                        message_id=movie["message_id"],
+                        caption=new_caption
                     )
-                    
-                    # Delete forwarded message
-                    await context.bot.delete_message(
-                        chat_id=update.effective_chat.id,
-                        message_id=message.message_id
-                    )
-                    
-                    if message.caption:
-                        new_caption = clean_caption(message.caption, preserve_watermark=True)
-                        if new_caption != message.caption:
-                            await context.bot.edit_message_caption(
-                                chat_id=CHANNEL_ID,
-                                message_id=movie["message_id"],
-                                caption=new_caption
-                            )
-                            cleaned += 1
-                            db.update_stats("total_cleaned")
-                    
+                    movie["caption"] = new_caption # Update in-memory
+                    cleaned += 1
+                    db.update_stats("total_cleaned")
                     await asyncio.sleep(0.5)
                     
-                except Exception as e:
-                    print(f"Error cleaning message {movie['message_id']}: {e}")
-                    continue
-            
-            await status_msg.edit_text(f"🔄 Progress: {min(i+batch_size, total)}/{total} processed...")
+            except Exception as e:
+                print(f"Error cleaning message {movie['message_id']}: {e}")
+                if "Message can't be edited" in str(e):
+                    await status_msg.edit_text(f"❌ **PERMISSION ERROR!**\n\nBot ko Channel mein **'Edit messages'** ki permission dein.\nAborting operation.")
+                    db.save_database() # Save partial progress
+                    return
+                continue
         
+        db.save_database() # Save all changes to JSON file
         await status_msg.edit_text(
             f"✅ **Cleaning Complete!**\n\n"
             f"Total Movies: {total}\n"
             f"Cleaned: {cleaned}\n"
-            f"Unchanged: {total - cleaned}\n"
-            f"{'🏷️ Watermark protected!' if watermark_config['enabled'] else ''}"
+            f"Unchanged: {total - cleaned}"
         )
     
     except Exception as e:
         await status_msg.edit_text(f"❌ Error: {str(e)}")
 
 async def forward_movies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Forward all movies to another channel in batches"""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Ye command sirf admins ke liye hai!")
         return
     
     if not context.args:
-        await update.message.reply_text(
-            "⚠️ Usage: `/forward <channel_id>`\n"
-            "Example: `/forward -1001234567890` ya `/forward @channelname`",
-            parse_mode='Markdown'
-        )
+        await update.message.reply_text("⚠️ Usage: `/forward <channel_id>`", parse_mode='Markdown')
         return
     
     target_channel = context.args[0]
@@ -530,28 +430,23 @@ async def forward_movies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     movies = db.get_all_movies()
     total = len(movies)
     forwarded = 0
-    batch_size = 100
     
     try:
-        for i in range(0, total, batch_size):
-            batch = movies[i:i+batch_size]
-            for movie in batch:
-                try:
-                    await context.bot.forward_message(
-                        chat_id=target_channel,
-                        from_chat_id=CHANNEL_ID,
-                        message_id=movie["message_id"]
-                    )
-                    forwarded += 1
-                    db.update_stats("total_forwarded")
-                    await asyncio.sleep(0.5)
-                    
-                except Exception as e:
-                    print(f"Error forwarding message {movie['message_id']}: {e}")
-                    continue
-            
-            await status_msg.edit_text(f"🔄 Progress: {min(i+batch_size, total)}/{total} forwarded...")
+        for movie in movies:
+            try:
+                await context.bot.forward_message(
+                    chat_id=target_channel,
+                    from_chat_id=CHANNEL_ID,
+                    message_id=movie["message_id"]
+                )
+                forwarded += 1
+                db.update_stats("total_forwarded")
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                print(f"Error forwarding message {movie['message_id']}: {e}")
+                continue
         
+        db.save_database() # Save stats
         await status_msg.edit_text(
             f"✅ **Forwarding Complete!**\n\n"
             f"Total Movies: {total}\n"
@@ -563,7 +458,6 @@ async def forward_movies(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Error: {str(e)}")
 
 async def handle_duplicates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Detect and remove duplicate movies"""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Ye command sirf admins ke liye hai!")
         return
@@ -587,11 +481,9 @@ async def handle_duplicates(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Kya aap inhe delete karna chahte hain?",
         reply_markup=reply_markup
     )
-    
     context.user_data['duplicates'] = duplicates
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle button callbacks"""
     query = update.callback_query
     await query.answer()
     
@@ -612,16 +504,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.5)
             except Exception as e:
                 print(f"Error deleting duplicate: {e}")
-        
-        await status_msg.edit_text(
-            f"✅ **{deleted} Duplicate Movies Deleted!**"
-        )
+                if "Message to delete not found" in str(e):
+                    db.remove_movie_by_index(idx) # Remove from DB if already deleted
+                elif "message can't be deleted" in str(e):
+                     await status_msg.edit_text(f"❌ **PERMISSION ERROR!**\n\nBot ko Channel mein **'Delete messages'** ki permission dein.\nAborting operation.")
+                     db.save_database()
+                     return
+
+        db.save_database() # Save changes
+        await status_msg.edit_text(f"✅ **{deleted} Duplicate Movies Deleted!**")
     
     elif query.data == "cancel_duplicates":
         await query.edit_message_text("❌ Duplicate deletion cancelled.")
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show bot statistics"""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Ye command sirf admins ke liye hai!")
         return
@@ -639,57 +535,45 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🏷️ Watermarks Added: {stats['watermarks_added']}
 
 **Watermark Status:** {'✅ Enabled' if watermark_config['enabled'] else '❌ Disabled'}
-
 🕒 Last Updated: {stats.get('last_updated', 'Never')}
 
 **Channel:** {CHANNEL_USERNAME}
 **Channel ID:** `{CHANNEL_ID}`
     """
-    
     await update.message.reply_text(stats_text, parse_mode='Markdown')
 
 async def refresh_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Refresh database"""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Ye command sirf admins ke liye hai!")
         return
-    
-    status_msg = await update.message.reply_text("🔄 Database refresh ho raha hai...")
     
     db.data = db.load_database()
-    
-    await status_msg.edit_text(
-        "✅ Database refreshed!\n"
-        f"Total Movies: {len(db.get_all_movies())}"
-    )
+    await update.message.reply_text(f"✅ Database refreshed! Total Movies: {len(db.get_all_movies())}")
 
 async def backup_database(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send database backup file"""
     if not await is_admin(update.effective_user.id):
         await update.message.reply_text("⛔ Ye command sirf admins ke liye hai!")
         return
     
+    db.save_database() # Ensure latest data is saved before backup
     try:
         with open(JSON_DB_FILE, 'rb') as f:
             await update.message.reply_document(
                 document=f,
-                filename=f"backup_{datetime.now().strftime('%Y%m%d_%HM%S')}.json",
+                filename=f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                 caption="📦 Database Backup"
             )
     except Exception as e:
         await update.message.reply_text(f"❌ Error creating backup: {str(e)}")
 
 async def handle_new_movies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Auto-index new movies and add watermark"""
     if update.channel_post and update.channel_post.chat.id == CHANNEL_ID:
         message = update.channel_post
         
-        # Check if message has media
         if message.video or message.document:
             file_id = message.video.file_id if message.video else message.document.file_id
             caption = message.caption or ""
             
-            # Add watermark if enabled
             watermark_config = db.get_watermark()
             if watermark_config["enabled"]:
                 new_caption = add_watermark_to_caption(caption)
@@ -703,18 +587,16 @@ async def handle_new_movies(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         caption = new_caption
                         db.update_stats("watermarks_added")
                     except Exception as e:
-                        print(f"Error adding watermark to new movie: {e}")
+                        print(f"Error adding watermark to new movie {message.message_id}: {e}")
             
             file_hash = calculate_file_hash(file_id, caption)
             
-            # Add to database
             db.add_movie(
-                message_id=message.id,
+                message_id=message.message_id, # Using message_id
                 file_id=file_id,
                 caption=caption,
                 file_hash=file_hash
             )
-            
             print(f"New movie indexed: {message.message_id}")
 
 # Initialize Bot
@@ -727,7 +609,7 @@ ptb = (
     .build()
 )
 
-# Conversation handler for watermark setting
+# Conversation handler
 watermark_conv = ConversationHandler(
     entry_points=[CommandHandler("setwatermark", set_watermark_start)],
     states={
@@ -754,13 +636,12 @@ ptb.add_handler(CallbackQueryHandler(button_callback))
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # BOT_TOKEN aur WEBHOOK_URL check karo
     if not BOT_TOKEN:
-        print("Error: BOT_TOKEN environment variable not set. Lifespan will not start.")
+        print("Error: BOT_TOKEN not set.")
         yield
         return
     if not WEBHOOK_URL:
-        print("Error: WEBHOOK_URL environment variable not set. Lifespan will not start.")
+        print("Error: WEBHOOK_URL not set.")
         yield
         return
         
@@ -784,21 +665,16 @@ async def process_update(request: Request):
 async def health_check():
     return {"status": "Bot is running!", "timestamp": datetime.now().isoformat()}
 
-
 if __name__ == "__main__":
-    # Environment variables check
     if not BOT_TOKEN:
-        print("CRITICAL: BOT_TOKEN environment variable not set. Exiting.")
+        print("CRITICAL: BOT_TOKEN not set. Exiting.")
         exit(1)
     if not WEBHOOK_URL:
-        print("CRITICAL: WEBHOOK_URL environment variable not set. Exiting.")
+        print("CRITICAL: WEBHOOK_URL not set. Exiting.")
         exit(1)
     if not ADMIN_IDS:
-         print("WARNING: ADMIN_IDS environment variable not set. Bot will run, but no one can use admin commands.")
+         print("WARNING: ADMIN_IDS not set. Admin commands will not work.")
 
-    # Hosting platforms jaise Render 'PORT' variable deti hain
-    # Render PORT 10000 deta hai
     port = int(os.environ.get('PORT', 10000))
     print(f"--- Starting Uvicorn server on 0.0.0.0:{port} ---")
-    
     uvicorn.run(app, host="0.0.0.0", port=port)
