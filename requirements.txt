@@ -1,5 +1,3 @@
-pyrogram[TgCrypto]  # TgCrypto प्रदर्शन के लिए अनुशंसित है
-python-dotenv       # .env फ़ाइलों को पढ़ने के लिए
-aiofiles            # एसिंक्रोनस फ़ाइल I/O के लिए (स्थिरता के लिए महत्वपूर्ण)
-aiohttp  
-TgCrypto
+pyrogram==2.0.106
+tgcrypto
+flask
