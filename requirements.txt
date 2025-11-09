@@ -1,6 +1,6 @@
-python-telegram-bot==20.7
-fastapi==0.109.0
-uvicorn==0.27.0
-gunicorn==21.2.0
+python-telegram-bot
+fastapi
+uvicorn[standard]
+gunicorn
 pyrogram
 TgCrypto
