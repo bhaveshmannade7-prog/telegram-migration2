@@ -1,6 +1,4 @@
-python-telegram-bot
-fastapi
-uvicorn[standard]
-gunicorn
-pyrogram
-TgCrypto
+pyrogram==2.0.106
+tgcrypto
+aiofiles
+python-dotenv
