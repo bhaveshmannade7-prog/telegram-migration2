@@ -1,5 +1,0 @@
-pyrogram
-tgcrypto
-flask
-asyncpg  # Naya (PostgreSQL ke liye)
-psycopg2-binary # Render ke liye zaroori
