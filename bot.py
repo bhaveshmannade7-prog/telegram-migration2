@@ -1608,7 +1608,103 @@ async def no_url_join_callback(callback: types.CallbackQuery):
 @dp.message(F.text & ~F.text.startswith("/") & (F.chat.type == "private"), BannedFilter())
 async def banned_search_movie_handler_stub(message: types.Message): pass
 
-# SMART FIX: StateFilter(None) ensured search only triggers outside FSM flow
+# ==================================================
+# +++++ NEW: ADVANCED SEARCH HANDLERS (Private & Group) +++++
+# ==================================================
+
+async def process_search_results(
+    query: str, 
+    user_id: int, 
+    redis_cache: RedisCacheLayer, 
+    page: int = 0, 
+    is_group: bool = False,
+    bot_username: str = ""
+) -> tuple[str, InlineKeyboardMarkup | None]:
+    """
+    Common logic to fetch results and build pagination keyboard.
+    Returns: (Result Text, Keyboard)
+    """
+    limit_per_page = 10 # 10 results per page clean lagta hai
+    
+    # 1. Try fetching from Redis Cache first
+    cache_key = f"search_res:{user_id}"
+    cached_data = None
+    if redis_cache.is_ready():
+        cached_data = await redis_cache.get(cache_key)
+
+    final_results = []
+    
+    if cached_data and page > 0: # Use cache for next pages
+        try:
+            final_results = json.loads(cached_data)
+        except: pass
+    
+    # 2. If no cache or page 0 (fresh search), run V7 Engine
+    if not final_results:
+        loop = asyncio.get_running_loop()
+        cache_snapshot = fuzzy_movie_cache.copy()
+        # Run Heavy Search in Executor
+        fuzzy_hits_raw = await loop.run_in_executor(executor, partial(python_fuzzy_search, cache_snapshot=cache_snapshot), query, 200) # Fetch 200 items max
+        
+        unique_movies = {}
+        for movie in fuzzy_hits_raw:
+            if movie.get('imdb_id') and movie['imdb_id'] not in unique_movies:
+                unique_movies[movie['imdb_id']] = movie
+        
+        final_results = list(unique_movies.values())
+        final_results.sort(key=lambda x: x.get('score', 0), reverse=True)
+        
+        # Cache results for 10 minutes (Optimization)
+        if redis_cache.is_ready() and final_results:
+            # Only store essential data to save RAM
+            minimal_data = [{'title': m['title'], 'year': m.get('year'), 'imdb_id': m['imdb_id'], 'score': m.get('score')} for m in final_results]
+            await redis_cache.set(cache_key, json.dumps(minimal_data), ttl=600)
+
+    if not final_results:
+        return None, None
+
+    # 3. Pagination Logic
+    total_results = len(final_results)
+    start_idx = page * limit_per_page
+    end_idx = start_idx + limit_per_page
+    page_results = final_results[start_idx:end_idx]
+
+    if not page_results:
+        return "No more results.", None
+
+    buttons = []
+    for movie in page_results:
+        display_title = movie["title"][:35] + '...' if len(movie["title"]) > 35 else movie["title"]
+        year_str = f" ({movie.get('year')})" if movie.get('year') else ""
+        
+        if is_group:
+            # Deep Linking for Group (Opens in Private Bot)
+            # Format: https://t.me/BotUsername?start=get_tt12345
+            url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
+            buttons.append([InlineKeyboardButton(text=f"🎬 {display_title}{year_str}", url=url)])
+        else:
+            # Callback for Private Chat
+            buttons.append([InlineKeyboardButton(text=f"🎬 {display_title}{year_str}", callback_data=f"get_{movie['imdb_id']}")])
+
+    # Navigation Buttons (Previous | Next)
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
+    
+    if end_idx < total_results:
+        nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
+    
+    if nav_row:
+        buttons.append(nav_row)
+
+    # Info footer
+    total_pages = (total_results + limit_per_page - 1) // limit_per_page
+    text = f"🔎 **Results for:** `{'Stored Query' if page > 0 else query}`\n**Page:** {page+1}/{total_pages} | **Found:** {total_results}"
+    
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# --- 1. PRIVATE CHAT SEARCH HANDLER ---
 @dp.message(
     StateFilter(None), 
     F.text, 
@@ -1616,128 +1712,136 @@ async def banned_search_movie_handler_stub(message: types.Message): pass
     (F.chat.type == "private")
 )
 @handler_timeout(20)
-async def search_movie_handler(message: types.Message, bot: Bot, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
+async def search_movie_handler_private(message: types.Message, bot: Bot, db_primary: Database, redis_cache: RedisCacheLayer):
     user = message.from_user
     if not user: return
-    user_id = user.id
 
-    if not await ensure_capacity_or_inform(message, db_primary, bot, redis_cache):
-        return
-            # --- FIX START: Force Join Check Before Search ---
-    # Agar user member nahi hai, toh search rok do aur Join buttons dikhao
+    # A. Spam Check (NEW)
+    spam_status = spam_guard.check_user(user.id)
+    if spam_status['status'] != 'ok':
+        if spam_status['status'] == 'ban_now':
+            # Notify Admin
+            await safe_tg_call(bot.send_message(ADMIN_USER_ID, f"🚨 **SPAM ALERT**\nUser: {user.id} (@{user.username})\nAction: Blocked for 1h."))
+            await message.answer(f"🚫 **System Blocked**\n\nYou are searching too fast. Access restricted for {int(spam_status['remaining']/60)} minutes.")
+        return # Stop execution
+
+    # B. Capacity Check
+    if not await ensure_capacity_or_inform(message, db_primary, bot, redis_cache): return
+
+    # C. Join Check
     is_member = await check_user_membership(user.id, bot)
     if not is_member:
         join_markup = get_join_keyboard()
-        if join_markup:
-            join_text = (
-                f"🔒 **UNLOCK SEARCH ACCESS**\n"
-                f"━━━━━━━━━━━━━━━━━━━\n"
-                f"⚠️ You must join our channels to search for movies.\n\n"
-                f"1️⃣ **Join the channels** below.\n"
-                f"2️⃣ Tap **Verify Membership** to unlock."
-            )
-            await safe_tg_call(message.answer(join_text, reply_markup=join_markup), semaphore=TELEGRAM_COPY_SEMAPHORE)
-            return
-    # --- FIX END ---
-    original_query = message.text.strip()
-    if len(original_query) < 2:
-        await safe_tg_call(message.answer("⚠️ **Query too short.** Please enter at least 2 characters."), semaphore=TELEGRAM_COPY_SEMAPHORE)
-        return
-        
-    clean_query = clean_text_for_search(original_query) # "tere ishq me"
-    if not clean_query:
-        await safe_tg_call(message.answer("⚠️ **Invalid Query.** Please try a different title."), semaphore=TELEGRAM_COPY_SEMAPHORE)
-        return
-        
-    if not fuzzy_movie_cache:
-        logger.error(f"FATAL: User {user_id} ne search kiya, lekin fuzzy cache khaali hai!")
-        if user.id == ADMIN_USER_ID:
-            await safe_tg_call(message.answer("⚠️ ADMIN WARNING: Cache Empty. Run /reload_fuzzy_cache."), semaphore=TELEGRAM_COPY_SEMAPHORE)
-        else:
-            # UI Enhancement: Soft initialization error
-            await safe_tg_call(message.answer("🔄 **System Initializing...**\nPlease wait 30 seconds and try again."), semaphore=TELEGRAM_COPY_SEMAPHORE)
+        await message.answer("🔒 **Unlock Search**\nPlease join our channels first.", reply_markup=join_markup)
         return
 
-    # UI Enhancement: Polished searching message
-    searching_msg = await safe_tg_call(message.answer(f"📡 **Scanning Database...**\nLooking for: <i>{original_query}</i>"), semaphore=TELEGRAM_COPY_SEMAPHORE)
-    if not searching_msg: return
+    # D. Process Search
+    query = clean_text_for_search(message.text)
+    if len(query) < 2:
+        await message.answer("⚠️ Query too short.")
+        return
 
-    # --- SAVE QUERY FOR REFRESH LOGIC (Redis) ---
-    if redis_cache.is_ready():
-         # Store for 10 minutes to allow refresh
-         await redis_cache.set(f"last_query:{user_id}", original_query, ttl=600)
-
-    # --- NAYA HYBRID SEARCH (Smart Sequence > Fuzzy) ---
+    wait_msg = await message.answer(f"🔎 Searching for '{query}'...")
     
-    logger.info(f"User {user_id} searching for '{clean_query}'")
+    # Store query for "Search in Bot" check later (optional) or stats
+    if redis_cache.is_ready(): await redis_cache.set(f"last_query:{user.id}", query, ttl=600)
+
+    text, markup = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
     
-    # Rule: python_fuzzy_search is CPU-bound (rapidfuzz), run it in ThreadPoolExecutor.
-    loop = asyncio.get_running_loop()
-    # python_fuzzy_search is a plain function, so it runs in executor
-        # FIX: Pass Cache Snapshot to Thread
-    cache_snapshot = fuzzy_movie_cache.copy() # Shallow copy is enough and fast
-    fuzzy_hits_task = loop.run_in_executor(executor, partial(python_fuzzy_search, cache_snapshot=cache_snapshot), original_query, 45)
-  
+    if text:
+        await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
+    else:
+        await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
+
+
+# --- 2. GROUP CHAT SEARCH HANDLER (NEW) ---
+@dp.message(
+    F.text,
+    ~F.text.startswith("/"),
+    F.chat.type.in_({"group", "supergroup"})
+)
+async def search_movie_handler_group(message: types.Message, bot: Bot, db_primary: Database, redis_cache: RedisCacheLayer):
+    # A. Check if Group is Authorized
+    chat_id_str = str(message.chat.id)
+    chat_username = f"@{message.chat.username}" if message.chat.username else ""
+    
+    # Check if this group is in AUTHORIZED_GROUPS list (Env var)
+    # Logic: Agar list defined hai, to check karo. Agar list empty hai, to sab groups me allow karo (ya disable karo, yahan hum allow kar rahe hain agar user ne group me add kiya hai)
+    if AUTHORIZED_GROUPS:
+         if chat_id_str not in AUTHORIZED_GROUPS and chat_username not in AUTHORIZED_GROUPS:
+             return # Ignore messages in unauthorized groups
+    
+    user = message.from_user
+    if not user: return
+    
+    # B. Spam Check
+    spam_status = spam_guard.check_user(user.id)
+    if spam_status['status'] != 'ok':
+        # Group me shor nahi machana, bas ignore karo ya DM karo
+        return 
+
+    # C. Join Check (Group member ko bhi channel join hona chahiye)
+    # Note: Bot group me admin hona chahiye 'delete_message' ke saath
+    is_member = await check_user_membership(user.id, bot)
+    
+    # Auto-Delete Helper
+    async def delete_later(msgs_to_delete, delay=120):
+        await asyncio.sleep(delay)
+        for mid in msgs_to_delete:
+            try: await bot.delete_message(message.chat.id, mid)
+            except: pass
+
+    # Agar member nahi hai -> Reply with Join Buttons -> Auto delete
+    if not is_member:
+        join_markup = get_join_keyboard()
+        alert_msg = await message.reply(
+            f"⚠️ <b>{user.first_name}</b>, to search here, you must join our channels!",
+            reply_markup=join_markup
+        )
+        asyncio.create_task(delete_later([message.message_id, alert_msg.message_id], delay=30)) # 30s warning
+        return
+
+    # D. Search
+    query = clean_text_for_search(message.text)
+    if len(query) < 2: return # Ignore short texts in groups (normal chat)
+
+    bot_info = await bot.get_me()
+    text, markup = await process_search_results(query, user.id, redis_cache, page=0, is_group=True, bot_username=bot_info.username)
+
+    if text:
+        # Send Result
+        res_msg = await message.reply(text, reply_markup=markup)
+        # Schedule Delete (Query + Result)
+        asyncio.create_task(delete_later([message.message_id, res_msg.message_id], delay=120)) # 2 Minutes
+    else:
+        # Group me "No Result" bhejna spam ho sakta hai, ise skip kar sakte hain ya short msg bhej ke delete karein
+        pass 
+
+# --- 3. PAGINATION CALLBACK (NEW) ---
+@dp.callback_query(F.data.startswith("psearch:"))
+async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cache: RedisCacheLayer):
+    # Data format: psearch:page_num:is_group (1 or 0)
     try:
-        fuzzy_hits_raw = await fuzzy_hits_task
-    except Exception as e:
-        logger.error(f"Search Executor Failed: {e}")
-        fuzzy_hits_raw = []
-
-    unique_movies = {}
-    for movie in fuzzy_hits_raw:
-        # Exact match (score 1001) ko pehle hi dal denge
-        if movie.get('imdb_id') and movie['imdb_id'] not in unique_movies:
-            unique_movies[movie['imdb_id']] = movie
-
-    # --- End Hybrid Search ---
-
-    if not unique_movies:
-        # UI Enhancement: No results message
-        await safe_tg_call(searching_msg.edit_text(f"✖️ **NO RESULTS FOUND**\n━━━━━━━━━━━━━━\nWe couldn't find matches for '<b>{original_query}</b>'.\n\n🔹 Check spelling.\n🔹 Try a shorter keyword."))
+        _, page_str, is_grp_str = callback.data.split(":")
+        page = int(page_str)
+        is_group = bool(int(is_grp_str))
+    except:
+        await callback.answer("Error")
         return
 
-    buttons = []
-    max_buttons = 15
+    user_id = callback.from_user.id
+    bot_info = await bot.get_me()
     
-    final_results = list(unique_movies.values())
-    # Priority Sort
-    final_results.sort(key=lambda x: x.get('score', 0), reverse=True)
-    
-    # Slice for first page
-    page_results = final_results[:max_buttons]
-    
-    for movie in page_results:
-        # UI Enhancement: Shorten title & add premium icons
-        display_title = movie["title"][:35] + '...' if len(movie["title"]) > 35 else movie["title"]
-        year_str = f" ({movie.get('year')})" if movie.get('year') else ""
-        
-        icon = "🎬" # Default
-        if movie.get('match_type') == 'exact_anchor':
-            icon = "🎯" # Exact Match Anchor
-        elif 'score' in movie and movie['score'] >= 900: # High Fuzzy
-            icon = "🥇" 
-        elif 'score' in movie and movie['score'] >= 500: # Intent matches (Smart Sequence + Word Presence)
-            icon = "⚡" 
-        elif 'score' in movie and movie['score'] > 75: # High Fuzzy score
-            icon = "⭐"
-        
-        buttons.append([InlineKeyboardButton(text=f"{icon} {display_title}{year_str}", callback_data=f"get_{movie['imdb_id']}")])
+    # Fetch results from Cache (Query is implied from cache)
+    text, markup = await process_search_results("ignored", user_id, redis_cache, page=page, is_group=is_group, bot_username=bot_info.username)
 
-    # --- REFRESH BUTTON LOGIC ---
-    if len(final_results) > max_buttons:
-        # User requested refresh limit: 2 times per day.
-        # We start offset at 15.
-        buttons.append([InlineKeyboardButton(text="🔄 Refresh Results (Next Page)", callback_data="refresh_search:15")])
-
-    result_count = len(final_results)
-    result_count_text = f"{result_count}" if result_count <= 45 else "45+"
-    
-    # UI Enhancement: Premium header for results
-    await safe_tg_call(searching_msg.edit_text(
-        f"✨ **SEARCH COMPLETE**\n━━━━━━━━━━━━━━\nFound **{result_count_text}** matches for '<b>{original_query}</b>':\n👇 <i>Tap to download</i>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-    ))
+    if text:
+        try:
+            await callback.message.edit_text(text, reply_markup=markup)
+        except Exception:
+            await callback.answer("Updated.")
+    else:
+        await callback.answer("Page expired. Search again.", show_alert=True)
 
 # --- NEW: REFRESH SEARCH CALLBACK ---
 @dp.callback_query(F.data.startswith("refresh_search:"))
