@@ -1968,13 +1968,6 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
         error_detail = f"Unknown Error: {e}"
         logger.error(f"Exception during send/copy {imdb_id}: {e}", exc_info=True)
     if success and sent_msg_id:
-        # --- AUTO DELETE SCHEDULE ---
-        # Warning Msg ID wo message hai jisme button tha (callback.message)
-        warning_msg_id = callback.message.message_id
-        
-        # 2 minutes = 120 seconds
-        asyncio.create_task(schedule_auto_delete(bot, user.id, sent_msg_id, warning_msg_id, delay=120))
-        
         # UI Enhancement: Success message with DUAL LANGUAGE WARNING
         success_text = (
             f"🎉 **CONTENT DELIVERED**\n"
@@ -1986,10 +1979,38 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
             f"🔥 **FORWARD to 'Saved Messages' NOW!**\n"
             f"🔥 **Delete hone se pehle ise Forward kar lein!**"
         )
-        try:
-            await safe_tg_call(callback.message.edit_text(success_text))
-        except Exception:
-            pass 
+
+        # --- FIX: Deep Link Handling (Check if fake callback) ---
+        warning_msg_id = None
+        
+        # Agar ye Deep Link hai (humne id='0' set kiya tha start_command me)
+        # to hum User ka message Edit nahi kar sakte. Hume naya message bhejna padega.
+        if callback.id == '0':
+            # 1. Send Warning as New Message
+            sent_warning = await safe_tg_call(bot.send_message(chat_id=user.id, text=success_text))
+            if sent_warning:
+                warning_msg_id = sent_warning.message_id
+            
+            # 2. Delete User's /start command (Optional cleanup - Chat clean rahega)
+            try:
+                await safe_tg_call(bot.delete_message(chat_id=user.id, message_id=callback.message.message_id))
+            except Exception:
+                pass
+        else:
+            # Normal Case: Edit the existing bot message
+            try:
+                await safe_tg_call(callback.message.edit_text(success_text))
+                warning_msg_id = callback.message.message_id
+            except Exception:
+                # Fallback: Agar edit fail ho to send karo
+                sent_warning = await safe_tg_call(bot.send_message(chat_id=user.id, text=success_text))
+                if sent_warning:
+                    warning_msg_id = sent_warning.message_id
+
+        # --- AUTO DELETE SCHEDULE ---
+        # Ab hamare paas sahi warning_msg_id hai, chahe wo edit hua ho ya naya send hua ho
+        if warning_msg_id:
+             asyncio.create_task(schedule_auto_delete(bot, user.id, sent_msg_id, warning_msg_id, delay=120))
         
         # --- FEATURE A: POST-DOWNLOAD AD DELIVERY ---
         asyncio.create_task(send_sponsor_ad(user.id, bot, db_primary, redis_cache))
