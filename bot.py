@@ -529,40 +529,36 @@ async def check_user_membership(user_id: int, current_bot: Bot) -> bool:
         logger.error(f"Membership check critical error: {e}")
         return False
 
-# UI Enhancement: Redesign get_join_keyboard
+# UI Enhancement: Redesign get_join_keyboard (Supports 4 Channels)
 def get_join_keyboard() -> InlineKeyboardMarkup | None:
     buttons = []
     
-    def is_numeric_id_string(identifier):
-        if not identifier: return False
-        return identifier.isdigit() or (identifier.startswith('-') and identifier[1:].isdigit())
-        
-    def get_clean_identifier(identifier):
+    def get_btn(identifier, label_suffix):
         if not identifier: return None
-        identifier = re.sub(r'https?://t\.me/', '', identifier, flags=re.IGNORECASE)
-        return identifier.lstrip('@')
-        
-    # Button Labels Redesigned
-    if JOIN_CHANNEL_USERNAME:
-        clean_name = get_clean_identifier(JOIN_CHANNEL_USERNAME)
-        label = "📢 Join Official Channel" if not is_numeric_id_string(clean_name) else "📢 Join Private Channel"
-        
-        if is_numeric_id_string(clean_name):
-             buttons.append([InlineKeyboardButton(text=label, callback_data="no_url_join")])
+        clean = identifier.replace("https://t.me/", "").lstrip("@")
+        is_num = clean.isdigit() or (clean.startswith('-') and clean[1:].isdigit())
+        label = f"📢 Join {label_suffix}"
+        if is_num:
+            return InlineKeyboardButton(text=label, callback_data="no_url_join")
         else:
-             buttons.append([InlineKeyboardButton(text=label, url=f"https://t.me/{clean_name}")])
+            return InlineKeyboardButton(text=label, url=f"https://t.me/{clean}")
 
-    if USER_GROUP_USERNAME:
-        clean_name = get_clean_identifier(USER_GROUP_USERNAME)
-        label = "👥 Join Community Group" if not is_numeric_id_string(clean_name) else "👥 Join Private Group"
-        
-        if is_numeric_id_string(clean_name):
-             buttons.append([InlineKeyboardButton(text=label, callback_data="no_url_join")])
-        else:
-             buttons.append([InlineKeyboardButton(text=label, url=f"https://t.me/{clean_name}")])
-             
-    # Verification button always present if any join check is configured
-    if JOIN_CHANNEL_USERNAME or USER_GROUP_USERNAME: 
+    # Row 1: Main
+    row1 = []
+    if JOIN_CHANNEL_USERNAME: row1.append(get_btn(JOIN_CHANNEL_USERNAME, "Channel"))
+    if USER_GROUP_USERNAME: row1.append(get_btn(USER_GROUP_USERNAME, "Group"))
+    if row1: buttons.append(row1)
+
+    # Row 2: Extras
+    row2 = []
+    if EXTRA_CHANNEL_1: row2.append(get_btn(EXTRA_CHANNEL_1, "Backup 1"))
+    if EXTRA_CHANNEL_2: row2.append(get_btn(EXTRA_CHANNEL_2, "Backup 2"))
+    if row2: buttons.append(row2)
+
+    if buttons: 
+        buttons.append([InlineKeyboardButton(text="✅ Verify Membership", callback_data="check_join")])
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return None
         # UI Enhancement: Primary action button
         buttons.append([InlineKeyboardButton(text="✅ Verify Membership", callback_data="check_join")])
         return InlineKeyboardMarkup(inline_keyboard=buttons)
