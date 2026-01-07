@@ -130,6 +130,14 @@ try:
     # FIX: Input ko yahan clean karke store karein
     JOIN_CHANNEL_USERNAME = clean_tg_identifier(os.getenv("JOIN_CHANNEL_USERNAME", "thegreatmoviesl9"))
     USER_GROUP_USERNAME = clean_tg_identifier(os.getenv("USER_GROUP_USERNAME", "MOVIEMAZASU"))
+    
+    # --- NEW: Extra Channels & Authorized Groups ---
+    EXTRA_CHANNEL_1 = clean_tg_identifier(os.getenv("EXTRA_CHANNEL_1", ""))
+    EXTRA_CHANNEL_2 = clean_tg_identifier(os.getenv("EXTRA_CHANNEL_2", ""))
+    
+    # Groups jahan bot search allow karega (comma separated IDs or Usernames)
+    raw_groups = os.getenv("AUTHORIZED_GROUPS", "")
+    AUTHORIZED_GROUPS = [g.strip() for g in raw_groups.split(',') if g.strip()]
 
     RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
     PUBLIC_URL = os.getenv("PUBLIC_URL")
