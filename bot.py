@@ -29,6 +29,7 @@ from smart_watchdog import SmartWatchdog, WATCHDOG_ENABLED
 
 # --- NEW FEATURE IMPORTS ---
 from ad_manager import send_sponsor_ad
+from spam_protection import spam_guard # <--- NEW IMPORT
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 # CRITICAL FIX: StateFilter use karna zaroori hai conflicts ke liye
