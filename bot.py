@@ -559,10 +559,6 @@ def get_join_keyboard() -> InlineKeyboardMarkup | None:
         buttons.append([InlineKeyboardButton(text="✅ Verify Membership", callback_data="check_join")])
         return InlineKeyboardMarkup(inline_keyboard=buttons)
     return None
-        # UI Enhancement: Primary action button
-        buttons.append([InlineKeyboardButton(text="✅ Verify Membership", callback_data="check_join")])
-        return InlineKeyboardMarkup(inline_keyboard=buttons)
-    return None
 
 def get_full_limit_keyboard() -> InlineKeyboardMarkup | None:
     if not ALTERNATE_BOTS: return None
