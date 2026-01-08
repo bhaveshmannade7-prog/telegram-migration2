@@ -1858,6 +1858,7 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
     if not is_member:
         join_markup = get_join_keyboard()
         if join_markup:
+            # Agar member nahi hai, toh wahi message edit karke join button dikhao
             join_text = (
                 f"🔒 **FILE LOCKED / फाइल लॉक है**\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
