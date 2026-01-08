@@ -1357,13 +1357,14 @@ async def start_command(message: types.Message, bot: Bot, db_primary: Database, 
         await safe_tg_call(message.answer(welcome_text, reply_markup=main_menu), semaphore=TELEGRAM_COPY_SEMAPHORE)
     else:
         # UI Enhancement: Join Check Screen Text
-        welcome_text = (
-            f"🔒 **AUTHENTICATION REQUIRED**\n"
+                welcome_text = (
+            f"🔒 **ACCESS LOCKED / एक्सेस बंद है**\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"To access the full Cinematic Database, please verify your membership.\n\n"
-            f"1️⃣ **Join the channels** using the buttons below.\n"
-            f"2️⃣ Tap **Verify Membership** to unlock access.\n\n"
-            f"<i>Access is free and instant.</i>"
+            f"🇺🇸 You cannot search or watch movies without joining our channels.\n"
+            f"🇮🇳 आप हमारे चैनल ज्वाइन किए बिना मूवी सर्च या डाउनलोड नहीं कर सकते।\n\n"
+            f"👇 **Steps to Unlock / कैसे खोलें:**\n"
+            f"1️⃣ Join all channels below (सारे चैनल ज्वाइन करें)\n"
+            f"2️⃣ Tap **Verify Membership** (वेरीफाई बटन दबाएं)"
         )
         if join_markup:
             await safe_tg_call(message.answer(welcome_text, reply_markup=join_markup), semaphore=TELEGRAM_COPY_SEMAPHORE)
