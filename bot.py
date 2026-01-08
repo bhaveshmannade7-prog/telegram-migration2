@@ -1839,6 +1839,8 @@ async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cac
 
 @dp.callback_query(F.data.startswith("get_"))
 @handler_timeout(20)
+@dp.callback_query(F.data.startswith("get_"))
+@handler_timeout(20)
 async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Database, db_fallback: Database, redis_cache: RedisCacheLayer):
     user = callback.from_user
     if not user: 
@@ -1852,12 +1854,12 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
         return
         
     await safe_tg_call(callback.answer("📥 Retrieving Content..."))
-        # --- FIX START: Force Join Check on Download Button ---
+    
+    # --- Join Check (BILINGUAL) ---
     is_member = await check_user_membership(user.id, bot)
     if not is_member:
         join_markup = get_join_keyboard()
         if join_markup:
-            # Agar member nahi hai, toh wahi message edit karke join button dikhao
             join_text = (
                 f"🔒 **FILE LOCKED / फाइल लॉक है**\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
@@ -1870,30 +1872,24 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
             except Exception:
                 await safe_tg_call(bot.send_message(user.id, join_text, reply_markup=join_markup), semaphore=TELEGRAM_COPY_SEMAPHORE)
             return
-    # --- FIX END ---
-    
+
     if not await ensure_capacity_or_inform(callback, db_primary, bot, redis_cache):
         return
 
     imdb_id = callback.data.split("_", 1)[1]
     
-    # --- FIXED SHORTLINK WITH 24H COOLDOWN & BILINGUAL TEXT ---
+    # --- SHORTLINK LOGIC ---
     shortlink_enabled = await db_primary.get_config("shortlink_enabled", False)
     shortlink_api = await db_primary.get_config("shortlink_api", None)
     
-    # Check if user already has a 24H pass in Redis
     has_pass = False
     if redis_cache.is_ready():
         has_pass = await redis_cache.get(f"sl_pass:{user.id}")
 
-    # Agar system ON hai aur user ke paas pass NAHI hai
     if shortlink_enabled and shortlink_api and not has_pass and user.id != ADMIN_USER_ID:
-        # Create unique token
         token = await db_primary.create_unlock_token(user.id, imdb_id)
         bot_user = (await bot.get_me()).username
         unlock_url = f"https://t.me/{bot_user}?start=unlock_{token}"
-        
-        # Shorten link
         monetized_link = await get_shortened_link(unlock_url, db_primary)
         
         unlock_kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -1910,28 +1906,20 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
             "• Instant direct files (सीधी फाइलें मिलेंगी)\n\n"
             "👇 **Tap 'Unlock' to start** / नीचे 'Unlock' पर क्लिक करें"
         )
-        
         await callback.message.edit_text(text=bilingual_locked_text, reply_markup=unlock_kb)
         asyncio.create_task(db_primary.track_event("shortlink_attempt"))
         return
-    # --- END SHORTLINK WRAPPER ---
 
-    # get_movie_by_imdb is an async method in database.py
+    # --- MOVIE FETCH ---
     movie = await safe_db_call(db_primary.get_movie_by_imdb(imdb_id), timeout=DB_OP_TIMEOUT)
     if not movie:
-        logger.warning(f"Movie {imdb_id} not found in db_primary, checking db_fallback...")
-        # get_movie_by_imdb is an async method in database.py
         movie = await safe_db_call(db_fallback.get_movie_by_imdb(imdb_id), timeout=DB_OP_TIMEOUT)
 
     if not movie:
-        # UI Enhancement: Movie Not Found message
         await safe_tg_call(callback.message.edit_text("❌ **CONTENT UNAVAILABLE**\nThis title has been removed from the library."))
-        if user.id == ADMIN_USER_ID:
-            await safe_tg_call(callback.message.answer(f"ADMIN: Movie <code>{imdb_id}</code> missing from DBs."))
         return
         
     success = False; error_detail = "System Failure"
-    # To track message ID for auto-delete
     sent_msg_id = None
     
     try:
@@ -1941,7 +1929,6 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
         ])
         
         if is_valid_for_copy:
-            # COPY MESSAGE returns a MessageId object (not Message)
             copy_result = await safe_tg_call(
                 bot.copy_message(
                     chat_id=user.id,
@@ -1959,15 +1946,13 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
             else: error_detail = "Source File Inaccessible"
         
         if not success:
-            logger.info(f"Copy fail ({error_detail}), ab send_document (file_id) try...")
             if not movie.get("file_id"):
                  error_detail = "Missing File ID"
             else:
-                # SEND DOCUMENT returns a Message object
                 send_result = await safe_tg_call(bot.send_document(
                     chat_id=user.id,
                     document=movie["file_id"],
-                    caption=None # Caption nahi chahiye
+                    caption=None
                 ), 
                 timeout=TG_OP_TIMEOUT * 4,
                 semaphore=TELEGRAM_COPY_SEMAPHORE
@@ -1981,8 +1966,8 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
     except Exception as e:
         error_detail = f"Unknown Error: {e}"
         logger.error(f"Exception during send/copy {imdb_id}: {e}", exc_info=True)
+        
     if success and sent_msg_id:
-        # UI Enhancement: Success message with DUAL LANGUAGE WARNING
         success_text = (
             f"🎉 **CONTENT DELIVERED**\n"
             f"━━━━━━━━━━━━━━━━\n"
@@ -1993,44 +1978,27 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
             f"🔥 **FORWARD to 'Saved Messages' NOW!**\n"
             f"🔥 **Delete hone se pehle ise Forward kar lein!**"
         )
-
-        # --- FIX: Deep Link Handling (Check if fake callback) ---
-        warning_msg_id = None
         
-        # Agar ye Deep Link hai (humne id='0' set kiya tha start_command me)
-        # to hum User ka message Edit nahi kar sakte. Hume naya message bhejna padega.
+        warning_msg_id = None
+        # Deep Link Check (Fake callback ID '0' means group link)
         if callback.id == '0':
-            # 1. Send Warning as New Message
             sent_warning = await safe_tg_call(bot.send_message(chat_id=user.id, text=success_text))
-            if sent_warning:
-                warning_msg_id = sent_warning.message_id
-            
-            # 2. Delete User's /start command (Optional cleanup - Chat clean rahega)
-            try:
-                await safe_tg_call(bot.delete_message(chat_id=user.id, message_id=callback.message.message_id))
-            except Exception:
-                pass
+            if sent_warning: warning_msg_id = sent_warning.message_id
+            try: await safe_tg_call(bot.delete_message(chat_id=user.id, message_id=callback.message.message_id))
+            except: pass
         else:
-            # Normal Case: Edit the existing bot message
             try:
                 await safe_tg_call(callback.message.edit_text(success_text))
                 warning_msg_id = callback.message.message_id
-            except Exception:
-                # Fallback: Agar edit fail ho to send karo
+            except:
                 sent_warning = await safe_tg_call(bot.send_message(chat_id=user.id, text=success_text))
-                if sent_warning:
-                    warning_msg_id = sent_warning.message_id
+                if sent_warning: warning_msg_id = sent_warning.message_id
 
-        # --- AUTO DELETE SCHEDULE ---
-        # Ab hamare paas sahi warning_msg_id hai, chahe wo edit hua ho ya naya send hua ho
         if warning_msg_id:
              asyncio.create_task(schedule_auto_delete(bot, user.id, sent_msg_id, warning_msg_id, delay=120))
-        
-        # --- FEATURE A: POST-DOWNLOAD AD DELIVERY ---
         asyncio.create_task(send_sponsor_ad(user.id, bot, db_primary, redis_cache))
 
     else:
-        # UI Enhancement: Error message (gentle)
         admin_hint = f"\n(Admin: /remove_dead_movie {imdb_id})" if user.id == ADMIN_USER_ID else ""
         error_text = (
             f"⚠️ **DELIVERY FAILED**\n"
@@ -2043,7 +2011,7 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
             await safe_tg_call(callback.message.edit_text(error_text))
         except Exception:
             await safe_tg_call(bot.send_message(user.id, error_text), semaphore=TELEGRAM_COPY_SEMAPHORE)
-
+        
 # =======================================================
 # +++++ BOT HANDLERS: ADMIN COMMANDS +++++
 # =======================================================
