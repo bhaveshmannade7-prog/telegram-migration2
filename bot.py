@@ -1712,9 +1712,17 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
 
     # C. Join Check
     is_member = await check_user_membership(user.id, bot)
-    if not is_member:
+     if not is_member:
         join_markup = get_join_keyboard()
-        await message.answer("🔒 **Unlock Search**\nPlease join our channels first.", reply_markup=join_markup)
+        join_text = (
+            f"⛔️ **SEARCH LOCKED / सर्च लॉक है**\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ **Action Required:**\n"
+            f"🇺🇸 You must join our backup channels to use this bot.\n"
+            f"🇮🇳 बोट का उपयोग करने के लिए आपको हमारे चैनल ज्वाइन करने होंगे।\n\n"
+            f"👇 **Join & Verify below:**"
+        )
+        await message.answer(join_text, reply_markup=join_markup)
         return
 
     # D. Process Search
@@ -1776,10 +1784,14 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
     # Agar member nahi hai -> Reply with Join Buttons -> Auto delete
     if not is_member:
         join_markup = get_join_keyboard()
-        alert_msg = await message.reply(
-            f"⚠️ <b>{user.first_name}</b>, to search here, you must join our channels!",
-            reply_markup=join_markup
+        join_text = (
+            f"⚠️ **{user.first_name}**, Access Denied!\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"🇺🇸 To search in this group, you must join our channels first.\n"
+            f"🇮🇳 इस ग्रुप में सर्च करने के लिए पहले हमारे चैनल ज्वाइन करें।\n\n"
+            f"👇 **Tap below to Join & Verify**"
         )
+        alert_msg = await message.reply(join_text, reply_markup=join_markup)
         asyncio.create_task(delete_later([message.message_id, alert_msg.message_id], delay=30)) # 30s warning
         return
 
