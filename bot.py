@@ -1859,10 +1859,11 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
         if join_markup:
             # Agar member nahi hai, toh wahi message edit karke join button dikhao
             join_text = (
-                f"🔒 **ACCESS DENIED**\n"
+                f"🔒 **FILE LOCKED / फाइल लॉक है**\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
-                f"⚠️ You must join our channels to download this file.\n\n"
-                f"👇 Join below and tap **Verify Membership**."
+                f"🇺🇸 You must join our channels to download this movie.\n"
+                f"🇮🇳 मूवी डाउनलोड करने के लिए आपको हमारे चैनल ज्वाइन करने होंगे।\n\n"
+                f"👇 **Join channels & Click Verify:**"
             )
             try:
                 await safe_tg_call(callback.message.edit_text(join_text, reply_markup=join_markup))
