@@ -1357,7 +1357,7 @@ async def start_command(message: types.Message, bot: Bot, db_primary: Database, 
         await safe_tg_call(message.answer(welcome_text, reply_markup=main_menu), semaphore=TELEGRAM_COPY_SEMAPHORE)
     else:
         # UI Enhancement: Join Check Screen Text
-         welcome_text = (
+        welcome_text = (
             f"🔒 **ACCESS LOCKED / एक्सेस बंद है**\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🇺🇸 You cannot search or watch movies without joining our channels.\n"
@@ -1371,6 +1371,7 @@ async def start_command(message: types.Message, bot: Bot, db_primary: Database, 
         else:
             logger.error("User ne start kiya par koi JOIN_CHANNEL/GROUP set nahi hai.")
             await safe_tg_call(message.answer("⚠️ Configuration Error: Please contact Admin."), semaphore=TELEGRAM_COPY_SEMAPHORE)
+
 
 
 @dp.message(Command("help"), BannedFilter())
