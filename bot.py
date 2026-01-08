@@ -1712,7 +1712,7 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
 
     # C. Join Check
     is_member = await check_user_membership(user.id, bot)
-     if not is_member:
+    if not is_member:
         join_markup = get_join_keyboard()
         join_text = (
             f"⛔️ **SEARCH LOCKED / सर्च लॉक है**\n"
