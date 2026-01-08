@@ -1839,8 +1839,6 @@ async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cac
 
 @dp.callback_query(F.data.startswith("get_"))
 @handler_timeout(20)
-@dp.callback_query(F.data.startswith("get_"))
-@handler_timeout(20)
 async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Database, db_fallback: Database, redis_cache: RedisCacheLayer):
     user = callback.from_user
     if not user: 
@@ -2011,7 +2009,6 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
             await safe_tg_call(callback.message.edit_text(error_text))
         except Exception:
             await safe_tg_call(bot.send_message(user.id, error_text), semaphore=TELEGRAM_COPY_SEMAPHORE)
-        
 # =======================================================
 # +++++ BOT HANDLERS: ADMIN COMMANDS +++++
 # =======================================================
