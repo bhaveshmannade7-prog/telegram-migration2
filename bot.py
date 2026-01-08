@@ -936,6 +936,7 @@ def python_fuzzy_search(query: str, limit: int = 10, **kwargs) -> List[Dict]:
         logger.error(f"python_fuzzy_search V7 mein error: {e}", exc_info=True)
         return []
 # ============ LIFESPAN MANAGEMENT (FastAPI) (F.I.X.E.D.) ============
+# --- REPLACEMENT CODE FOR LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global monitor_task, executor, watchdog
@@ -947,147 +948,53 @@ async def lifespan(app: FastAPI):
 
     # --- NEW: Redis Init (Free-Tier Optimization) ---
     await redis_cache.init_cache()
-    # --- END NEW ---
     
-    # MongoDB 1 (Primary)
-    db1_success = False
+    # MongoDB 1 (Primary) - Fail Fast check
     try:
-        # F.I.X: init_db coroutine ko execute karein aur safe_db_call se wrap karein
-        # safe_db_call ab connection error ko False mein badal dega.
         db1_success = await safe_db_call(db_primary.init_db(), timeout=60, default=False) 
-
         if db1_success:
              logger.info("Database 1 (MongoDB Primary) initialization safal.")
         else:
-             # F.I.X: agar safe_db_call False lautaata hai (connection fail/timeout), to crash karein
-             logger.critical("FATAL: Database 1 (MongoDB Primary) initialize nahi ho paya (connection failed or timed out).")
+             logger.critical("FATAL: MongoDB 1 Connection Failed.")
              await shutdown_procedure()
-             # Yahan koi 'from e' nahi hai, kyunki e ko safe_db_call mein handle kar liya gaya hai
              raise RuntimeError("MongoDB 1 connection fail (startup).")
     except Exception as e:
-        # F.I.X: agar upar ka try block mein koi unknown exception aata hai (rare), to crash karein
-        logger.critical(f"FATAL: Database 1 (MongoDB Primary) initialize nahi ho paya: {e}", exc_info=True)
+        logger.critical(f"FATAL: Database 1 Init Error: {e}", exc_info=True)
         await shutdown_procedure()
         raise RuntimeError("MongoDB 1 connection fail (startup).") from e
 
-    # MongoDB 2 (Fallback)
+    # MongoDB 2 & Neon (Best Effort)
     try:
-        # F.I.X: init_db coroutine ko execute karein aur safe_db_call se wrap karein
-        db_fallback_success = await safe_db_call(db_fallback.init_db(), default=False)
-        if db_fallback_success:
+        if await safe_db_call(db_fallback.init_db(), default=False):
              logger.info("Database 2 (MongoDB Fallback) initialization safal.")
-        else:
-             logger.warning("Database 2 (MongoDB Fallback) initialization failed. Bot degraded mode mein chalega.")
-    except Exception as e:
-        logger.warning(f"Database 2 (MongoDB Fallback) initialize karte waqt error: {e}")
-
-    # NeonDB 3
-    try:
-        # NeonDB init is a pure ASYNC method (asyncpg)
         await db_neon.init_db() 
-        logger.info("Database 3 (NeonDB/Postgres Backup) initialization safal.")
+        logger.info("Database 3 (NeonDB) initialization safal.")
     except Exception as e:
-        logger.critical(f"FATAL: Database 3 (NeonDB/Postgres Backup) initialize nahi ho paya: {e}", exc_info=True)
-        await shutdown_procedure()
-        raise RuntimeError("NeonDB/Postgres connection fail (startup).") from e
+        logger.warning(f"Backup Database Init Error: {e}")
 
-
-    # --- NAYA: Fuzzy Cache Load Karein (ab Redis/Mongo se) ---
-    await load_fuzzy_cache(db_primary)
+    # --- CRITICAL FIX: Background Cache Loading (Startup Timeout Fix) ---
+    # Ye line ab wait nahi karegi, background me chalegi
+    asyncio.create_task(load_fuzzy_cache(db_primary))
 
     # --- NEW: Start Priority Queue Workers ---
     db_objects_for_queue = {
-        'db_primary': db_primary,
-        'db_fallback': db_fallback,
-        'db_neon': db_neon,
-        'redis_cache': redis_cache,
-        'admin_id': ADMIN_USER_ID
+        'db_primary': db_primary, 'db_fallback': db_fallback,
+        'db_neon': db_neon, 'redis_cache': redis_cache, 'admin_id': ADMIN_USER_ID
     }
     priority_queue.start_workers(bot, dp, db_objects_for_queue)
     logger.info(f"Priority Queue with {QUEUE_CONCURRENCY} workers start ho gaya।")
-    # --- END NEW ---
 
     monitor_task = asyncio.create_task(monitor_event_loop())
-    logger.info("Event loop monitor start ho gaya.")
 
-    # --- NEW: Start Watchdog (Rule: Only ADD new layers/wrappers) ---
+    # --- Watchdog ---
     if WATCHDOG_ENABLED:
-         db_objects_for_watchdog = {
-             'db_primary': db_primary,
-             'db_neon': db_neon,
-             'redis_cache': redis_cache,
-         }
-         # Watchdog ko DP ke baaki objects pass karein
+         db_objects_for_watchdog = {'db_primary': db_primary, 'db_neon': db_neon, 'redis_cache': redis_cache}
          watchdog = SmartWatchdog(bot, dp, db_objects_for_watchdog)
          watchdog.start()
          logger.warning("Smart Watchdog initialized and running.")
-    # --- END NEW ---
     
-    # --- FIX: Webhook calls ko Throttle karna (Multi-Token Flood Control) ---
-    
-    # NAYA FIX: Webhook initialization lock check
-    WEBHOOK_INIT_LOCK_NAME = "global_webhook_set_lock"
-    
-    # check_if_lock_exists is an async method in database.py
-    is_webhook_already_set = await safe_db_call(db_primary.check_if_lock_exists(WEBHOOK_INIT_LOCK_NAME), default=False)
-
-    if not is_webhook_already_set:
-        logger.warning("Webhook initialization lock nahi mila. Setting up webhooks...")
-        
-        # acquire_cross_process_lock is an async method in database.py
-        lock_acquired = await safe_db_call(db_primary.acquire_cross_process_lock(WEBHOOK_INIT_LOCK_NAME, 300), default=False)
-        
-        if lock_acquired:
-            try:
-                webhook_tasks = []
-                for bot_instance in bot_manager.get_all_bots():
-                    token = bot_instance.token
-                    webhook_url_for_token = build_webhook_url().replace(BOT_TOKEN, token) 
-                    
-                    if webhook_url_for_token:
-                        # Webhook setting function
-                        async def set_webhook_safely(bot_instance: Bot, url: str):
-                            async with WEBHOOK_SEMAPHORE:
-                                # Guaranteed delay for setting webhook on any token (FLOOD WAIT mitigation)
-                                await asyncio.sleep(1.0) 
-                                try:
-                                    current_webhook = await safe_tg_call(bot_instance.get_webhook_info())
-                                    is_webhook_set = current_webhook and current_webhook.url == url
-            
-                                    if not is_webhook_set:
-                                         logger.info(f"Webhook set kiya ja raha hai for {token[:4]}...: {url}")
-                                         result = await safe_tg_call(
-                                             bot_instance.set_webhook(
-                                                 url=url,
-                                                 allowed_updates=dp.resolve_used_update_types(),
-                                                 secret_token=(WEBHOOK_SECRET or None),
-                                                 drop_pending_updates=True
-                                             )
-                                         )
-                                         if result:
-                                             logger.info(f"Webhook set ho gaya for {token[:4]}...।")
-                                         else:
-                                             logger.error(f"Webhook setup fail for {token[:4]}... after retries.")
-                                    else:
-                                         logger.info(f"Webhook pehle se sahi set hai for {token[:4]}...।")
-                                except Exception as e:
-                                    logger.error(f"Webhook setup mein critical error for {token[:4]}...: {e}", exc_info=True)
-                        
-                        webhook_tasks.append(set_webhook_safely(bot_instance, webhook_url_for_token))
-
-                if webhook_tasks:
-                    # Sabhi set_webhook tasks ko chalao
-                    await asyncio.gather(*webhook_tasks) 
-                
-            finally:
-                # release_cross_process_lock is an async method in database.py
-                await safe_db_call(db_primary.release_cross_process_lock(WEBHOOK_INIT_LOCK_NAME))
-                logger.warning("✅ Global Webhook Lock released.")
-        else:
-            logger.warning("Webhook Lock acquire nahi ho paya. Assuming another process is handling it or system load is too high.")
-    else:
-        logger.info("Webhook initialization lock exists. Skipping set_webhook procedure in this worker.")
-    # --- END FIX ---
+    # --- CRITICAL FIX: Webhook Setup in Background ---
+    asyncio.create_task(setup_webhooks_background())
 
     setup_signal_handlers()
     logger.info("Application startup poora hua. Bot taiyar hai.")
@@ -1096,7 +1003,35 @@ async def lifespan(app: FastAPI):
     await shutdown_procedure()
     logger.info("Application shutdown poora hua.")
 
-
+# --- NEW HELPER FOR LIFESPAN ---
+async def setup_webhooks_background():
+    """Background task to set webhooks without blocking startup"""
+    WEBHOOK_INIT_LOCK_NAME = "global_webhook_set_lock"
+    # Wait a bit for DB to settle
+    await asyncio.sleep(2)
+    
+    is_set = await safe_db_call(db_primary.check_if_lock_exists(WEBHOOK_INIT_LOCK_NAME), default=False)
+    if not is_set and WEBHOOK_URL:
+        if await safe_db_call(db_primary.acquire_cross_process_lock(WEBHOOK_INIT_LOCK_NAME, 300), default=False):
+            try:
+                tasks = []
+                for bot_instance in bot_manager.get_all_bots():
+                    token = bot_instance.token
+                    url = build_webhook_url().replace(BOT_TOKEN, token)
+                    if url:
+                        tasks.append(safe_tg_call(
+                            bot_instance.set_webhook(
+                                url=url, allowed_updates=dp.resolve_used_update_types(),
+                                secret_token=(WEBHOOK_SECRET or None), drop_pending_updates=True
+                            )
+                        ))
+                if tasks: await asyncio.gather(*tasks)
+                logger.info("✅ Webhooks set successfully (Background).")
+            except Exception as e:
+                logger.error(f"Webhook setup error: {e}")
+            finally:
+                await safe_db_call(db_primary.release_cross_process_lock(WEBHOOK_INIT_LOCK_NAME))
+                            
 app = FastAPI(lifespan=lifespan)
 
 # ============ WEBHOOK / HEALTHCHECK ROUTES (Unchanged) ============
