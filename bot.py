@@ -1530,6 +1530,7 @@ async def banned_search_movie_handler_stub(message: types.Message): pass
 # +++++ NEW: ADVANCED SEARCH HANDLERS (Private & Group) +++++
 # ==================================================
 
+# --- REPLACEMENT CODE FOR SEARCH PROCESSING ---
 async def process_search_results(
     query: str, 
     user_id: int, 
@@ -1540,29 +1541,36 @@ async def process_search_results(
 ) -> tuple[str, InlineKeyboardMarkup | None]:
     """
     Common logic to fetch results and build pagination keyboard.
-    Returns: (Result Text, Keyboard)
+    Optimized to prevent RAM spikes (No .copy() used).
     """
-    limit_per_page = 10 # 10 results per page clean lagta hai
+    limit_per_page = 10 
     
     # 1. Try fetching from Redis Cache first
     cache_key = f"search_res:{user_id}"
-    cached_data = None
-    if redis_cache.is_ready():
-        cached_data = await redis_cache.get(cache_key)
-
     final_results = []
     
-    if cached_data and page > 0: # Use cache for next pages
-        try:
-            final_results = json.loads(cached_data)
-        except: pass
+    if redis_cache.is_ready():
+        cached_data = await redis_cache.get(cache_key)
+        if cached_data and page > 0:
+            try: final_results = json.loads(cached_data)
+            except: pass
     
-    # 2. If no cache or page 0 (fresh search), run V7 Engine
+    # 2. If no cache or page 0, run V7 Engine
     if not final_results:
+        # CRITICAL FIX: Check if cache is actually populated
+        if not fuzzy_movie_cache:
+            return "⚠️ **System is warming up...**\nPlease try searching again in 10-15 seconds.", None
+
         loop = asyncio.get_running_loop()
-        cache_snapshot = fuzzy_movie_cache.copy()
-        # Run Heavy Search in Executor
-        fuzzy_hits_raw = await loop.run_in_executor(executor, partial(python_fuzzy_search, cache_snapshot=cache_snapshot), query, 200) # Fetch 200 items max
+        
+        # CRITICAL FIX: Do NOT use .copy(). Pass reference safely.
+        # partial ensures we pass the current state of fuzzy_movie_cache without duplicating 50MB in RAM
+        fuzzy_hits_raw = await loop.run_in_executor(
+            executor, 
+            partial(python_fuzzy_search, cache_snapshot=fuzzy_movie_cache), 
+            query, 
+            200
+        )
         
         unique_movies = {}
         for movie in fuzzy_hits_raw:
@@ -1572,10 +1580,12 @@ async def process_search_results(
         final_results = list(unique_movies.values())
         final_results.sort(key=lambda x: x.get('score', 0), reverse=True)
         
-        # Cache results for 10 minutes (Optimization)
+        # Cache results (Minimize RAM usage by storing only needed fields)
         if redis_cache.is_ready() and final_results:
-            # Only store essential data to save RAM
-            minimal_data = [{'title': m['title'], 'year': m.get('year'), 'imdb_id': m['imdb_id'], 'score': m.get('score')} for m in final_results]
+            minimal_data = [
+                {'title': m['title'], 'year': m.get('year'), 'imdb_id': m['imdb_id'], 'score': m.get('score')} 
+                for m in final_results
+            ]
             await redis_cache.set(cache_key, json.dumps(minimal_data), ttl=600)
 
     if not final_results:
@@ -1596,15 +1606,14 @@ async def process_search_results(
         year_str = f" ({movie.get('year')})" if movie.get('year') else ""
         
         if is_group:
-            # Deep Linking for Group (Opens in Private Bot)
-            # Format: https://t.me/BotUsername?start=get_tt12345
+            # Deep Linking for Group
             url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
             buttons.append([InlineKeyboardButton(text=f"🎬 {display_title}{year_str}", url=url)])
         else:
             # Callback for Private Chat
             buttons.append([InlineKeyboardButton(text=f"🎬 {display_title}{year_str}", callback_data=f"get_{movie['imdb_id']}")])
 
-    # Navigation Buttons (Previous | Next)
+    # Navigation Buttons
     nav_row = []
     if page > 0:
         nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
@@ -1615,12 +1624,11 @@ async def process_search_results(
     if nav_row:
         buttons.append(nav_row)
 
-    # Info footer
     total_pages = (total_results + limit_per_page - 1) // limit_per_page
     text = f"🔎 **Results for:** `{'Stored Query' if page > 0 else query}`\n**Page:** {page+1}/{total_pages} | **Found:** {total_results}"
     
     return text, InlineKeyboardMarkup(inline_keyboard=buttons)
-
+    
 
 # --- 1. PRIVATE CHAT SEARCH HANDLER ---
 @dp.message(
