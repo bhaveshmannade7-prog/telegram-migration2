@@ -1699,33 +1699,37 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
 
 
 # --- 2. GROUP CHAT SEARCH HANDLER (STRICT MODE) ---
+# --- 2. GROUP CHAT SEARCH HANDLER (ROBUST VERSION) ---
 @dp.message(
     F.text,
     ~F.text.startswith("/"),
     F.chat.type.in_({"group", "supergroup"})
 )
 async def search_movie_handler_group(message: types.Message, bot: Bot, db_primary: Database, redis_cache: RedisCacheLayer):
-    # A. STRICT AUTHORIZATION CHECK
-    chat_id_str = str(message.chat.id)
-    chat_username = f"@{message.chat.username}" if message.chat.username else ""
+    # A. ROBUST AUTHORIZATION CHECK
+    chat_id = message.chat.id
+    chat_id_str = str(chat_id)
+    chat_username = message.chat.username.lower() if message.chat.username else ""
     
-    # Check if this group is EXPLICITLY in AUTHORIZED_GROUPS list
-    if chat_id_str not in AUTHORIZED_GROUPS and chat_username not in AUTHORIZED_GROUPS:
-        # Agar group authorized nahi hai, toh chup-chap return kar jao (No search allowed)
-        return 
+    # Hum check karenge: Kya ID list mein hai? Ya bina @ wala username list mein hai?
+    is_authorized = False
+    for auth_id in AUTHORIZED_GROUPS:
+        clean_auth = auth_id.strip().lstrip('@').lower()
+        if chat_id_str == auth_id.strip() or chat_username == clean_auth:
+            is_authorized = True
+            break
 
-    # B. JOIN CHANNEL EXCLUSION (Security Layer)
-    # Taki JOIN_CHANNEL_USERNAME wala group sirf membership ke liye rahe
-    if JOIN_CHANNEL_USERNAME and chat_username == f"@{JOIN_CHANNEL_USERNAME}":
-        return
-    if USER_GROUP_USERNAME and chat_username == f"@{USER_GROUP_USERNAME}":
-        return
+    if not is_authorized:
+        return # Authorized nahi hai toh chup-chap return
+
+    # B. EXCLUSION REMOVAL
+    # Agar aap usi group mein search chahte hain jise aapne JOIN_CHANNEL_USERNAME banaya hai,
+    # toh yahan koi extra filter mat lagaiye. Humne upar authorization check kar liya hai.
 
     user = message.from_user
     if not user: return
     
-    # ... baki ka code (Spam Check, Join Check etc.) waisa hi rahega ...
-    
+    # Baki code (Spam Check aur Join Check) ko as-is rehne dein...
     # B. Spam Check
     spam_status = spam_guard.check_user(user.id)
     if spam_status['status'] != 'ok':
