@@ -1698,32 +1698,33 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
         await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
 
 
-# --- 2. GROUP CHAT SEARCH HANDLER (NEW) ---
-@dp.message(
-# --- Ye naya strict block paste karein ---
+# --- 2. GROUP CHAT SEARCH HANDLER (STRICT MODE) ---
 @dp.message(
     F.text,
     ~F.text.startswith("/"),
     F.chat.type.in_({"group", "supergroup"})
 )
 async def search_movie_handler_group(message: types.Message, bot: Bot, db_primary: Database, redis_cache: RedisCacheLayer):
-    # 1. Identity Check
+    # A. STRICT AUTHORIZATION CHECK
     chat_id_str = str(message.chat.id)
     chat_username = f"@{message.chat.username}" if message.chat.username else ""
     
-    # 2. Strict Authorization (Sirf AUTHORIZED_GROUPS me kaam karega)
+    # Check if this group is EXPLICITLY in AUTHORIZED_GROUPS list
     if chat_id_str not in AUTHORIZED_GROUPS and chat_username not in AUTHORIZED_GROUPS:
+        # Agar group authorized nahi hai, toh chup-chap return kar jao (No search allowed)
         return 
 
-    # 3. Join Group Exclusion (Membership group me search block karein)
-    join_ids = [f"@{JOIN_CHANNEL_USERNAME}", f"@{USER_GROUP_USERNAME}"]
-    if chat_username in join_ids:
+    # B. JOIN CHANNEL EXCLUSION (Security Layer)
+    # Taki JOIN_CHANNEL_USERNAME wala group sirf membership ke liye rahe
+    if JOIN_CHANNEL_USERNAME and chat_username == f"@{JOIN_CHANNEL_USERNAME}":
+        return
+    if USER_GROUP_USERNAME and chat_username == f"@{USER_GROUP_USERNAME}":
         return
 
-    # Baaki ka code (User check, Spam check) yahan se continue hoga...
-    
     user = message.from_user
     if not user: return
+    
+    # ... baki ka code (Spam Check, Join Check etc.) waisa hi rahega ...
     
     # B. Spam Check
     spam_status = spam_guard.check_user(user.id)
