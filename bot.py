@@ -1700,20 +1700,27 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
 
 # --- 2. GROUP CHAT SEARCH HANDLER (NEW) ---
 @dp.message(
+# --- Ye naya strict block paste karein ---
+@dp.message(
     F.text,
     ~F.text.startswith("/"),
     F.chat.type.in_({"group", "supergroup"})
 )
 async def search_movie_handler_group(message: types.Message, bot: Bot, db_primary: Database, redis_cache: RedisCacheLayer):
-    # A. Check if Group is Authorized
+    # 1. Identity Check
     chat_id_str = str(message.chat.id)
     chat_username = f"@{message.chat.username}" if message.chat.username else ""
     
-    # Check if this group is in AUTHORIZED_GROUPS list (Env var)
-    # Logic: Agar list defined hai, to check karo. Agar list empty hai, to sab groups me allow karo (ya disable karo, yahan hum allow kar rahe hain agar user ne group me add kiya hai)
-    if AUTHORIZED_GROUPS:
-         if chat_id_str not in AUTHORIZED_GROUPS and chat_username not in AUTHORIZED_GROUPS:
-             return # Ignore messages in unauthorized groups
+    # 2. Strict Authorization (Sirf AUTHORIZED_GROUPS me kaam karega)
+    if chat_id_str not in AUTHORIZED_GROUPS and chat_username not in AUTHORIZED_GROUPS:
+        return 
+
+    # 3. Join Group Exclusion (Membership group me search block karein)
+    join_ids = [f"@{JOIN_CHANNEL_USERNAME}", f"@{USER_GROUP_USERNAME}"]
+    if chat_username in join_ids:
+        return
+
+    # Baaki ka code (User check, Spam check) yahan se continue hoga...
     
     user = message.from_user
     if not user: return
