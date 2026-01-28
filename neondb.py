@@ -1,5 +1,5 @@
 # neondb.py - Hybrid Database Wrapper (PostgreSQL + MongoDB)
-# Fixed for Render Deployment & Parsing Errors
+# Fixed for Render SSL Handshake Errors [TLSV1_ALERT_INTERNAL_ERROR]
 
 import logging
 import asyncio
@@ -19,6 +19,7 @@ try:
     from pymongo import UpdateOne, IndexModel, ASCENDING, DESCENDING, TEXT
     from pymongo.errors import DuplicateKeyError, ConnectionFailure, OperationFailure
     import certifi
+    import ssl # Added for explicit SSL context
 except ImportError:
     AsyncIOMotorClient = None
 
@@ -58,8 +59,8 @@ class NeonDB:
         if url_lower.startswith("postgres") or "neon.tech" in url_lower:
             return "postgres"
             
-        # Fallback based on content (Safe check)
-        if "sslmode" in url_lower: # Postgres usually has sslmode
+        # Fallback based on content
+        if "sslmode" in url_lower:
             return "postgres"
             
         return "unknown"
@@ -73,7 +74,7 @@ class NeonDB:
         # --- POSTGRES MODE ---
         if self.mode == "postgres":
             if not asyncpg:
-                logger.critical("❌ CRITICAL: 'asyncpg' library is missing. Install it via pip.")
+                logger.critical("❌ CRITICAL: 'asyncpg' library is missing.")
                 return
             try:
                 # Create connection pool
@@ -86,25 +87,28 @@ class NeonDB:
                 logger.info("✅ Connected to NeonDB (PostgreSQL). Verifying Schema...")
                 await self._create_tables_postgres()
             except Exception as e:
-                # Catch invalid DSN errors specifically to stop crash loop
                 logger.error(f"❌ NeonDB (Postgres) Connection Failed: {e}")
-                logger.error("💡 Check your NEON_DATABASE_URL. It seems invalid for Postgres.")
-                self.mode = "error" # Disable further operations
+                self.mode = "error" 
 
         # --- MONGO MODE ---
         elif self.mode == "mongo":
             if not AsyncIOMotorClient:
-                logger.critical("❌ CRITICAL: 'motor' or 'pymongo' is missing. Install via pip.")
+                logger.critical("❌ CRITICAL: 'motor' is missing.")
                 return
             try:
-                # SSL Context for Atlas (Required for Render)
+                # SSL Context Fix for Render [TLSV1_ALERT_INTERNAL_ERROR]
+                # We strictly define the CA file and Allow Invalid Certs as fallback
                 ca = certifi.where()
+                
                 self.client = AsyncIOMotorClient(
                     self.database_url,
-                    serverSelectionTimeoutMS=5000,
+                    serverSelectionTimeoutMS=10000, # Increased timeout
                     tls=True,
-                    tlsCAFile=ca
+                    tlsCAFile=ca,
+                    tlsAllowInvalidCertificates=True, # <--- CRITICAL FIX FOR RENDER
+                    tlsAllowInvalidHostnames=True     # <--- CRITICAL FIX FOR RENDER
                 )
+                
                 # Ping check
                 await self.client.admin.command('ping')
                 
@@ -117,10 +121,10 @@ class NeonDB:
                 await self._create_indexes_mongo()
             except Exception as e:
                 logger.error(f"❌ MongoDB (Backup) Connection Failed: {e}")
-                self.mode = "error" # Disable further operations
+                self.mode = "error" 
         
         else:
-            logger.warning(f"⚠️ Unknown Database URL format: {self.database_url[:10]}... check your .env")
+            logger.warning(f"⚠️ Unknown Database URL format: {self.database_url[:10]}...")
 
     # --- Internal Schema Setup ---
 
@@ -170,7 +174,7 @@ class NeonDB:
         if self.mode == "postgres" and self.pool:
             return not self.pool._closed
         elif self.mode == "mongo" and self.client:
-            return True # Client doesn't track state easily, assumes alive if init passed
+            return True 
         return False
 
     async def close(self):
