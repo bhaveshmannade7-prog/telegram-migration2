@@ -646,31 +646,37 @@ def get_quality_label(filename: str) -> str:
     return "🎬 Watch Now"
 def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    SMART BANNER ENGINE V11 (ACCURACY FIXED)
-    1. Uses Clean DB Title.
-    2. Adds specific keywords to force movie/series posters.
+    SMART BANNER ENGINE V12 (ANTI-GLITCH)
+    1. Blocks garbage titles (len < 2).
+    2. Prioritizes OMDb > Bing.
+    3. Uses Strict Cleaning for Bing.
     """
-    # Priority 1: Real IMDb ID -> OMDb (High-Res)
+    # 1. Sanity Check: Agar title 'T', 'A', ya empty hai to default image
+    if not title or len(title.strip()) < 2:
+        return "https://i.ibb.co/9p43Y4k/default-movie.jpg" # Generic Cinema Image
+
+    # 2. Priority: OMDb (Official ID)
     if imdb_id and imdb_id.startswith("tt") and imdb_id[2:].isdigit():
-        omdb_key = "19f1d07c" # Free Key
+        omdb_key = "19f1d07c" 
         poster = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
         return f"https://wsrv.nl/?url={poster}&w=1000&output=jpg"
 
-    # Priority 2: Fallback -> Bing Search (Using CORRECT Title)
+    # 3. Fallback: Bing Search (Strict Mode)
     import urllib.parse
     
-    # Cleaning title for Image Search (removing special chars for better hits)
-    search_title = re.sub(r"[^a-zA-Z0-9\s]", "", title).strip()
-    
-    # 🔥 TRICK: "Poster" keyword aur Year jodne se accuracy 100% badh jati hai
-    if year:
-        query_str = f'movie poster "{search_title}" {year} high resolution'
+    # Remove trash characters, keep only standard text
+    clean_title = re.sub(r"[^a-zA-Z0-9\s]", "", title).strip()
+    if not clean_title: return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
+
+    # Keywords to force correct image
+    if year and year.isdigit():
+        query_str = f'movie poster "{clean_title}" {year} official vertical'
     else:
-        query_str = f'movie poster "{search_title}" official high resolution'
+        query_str = f'movie poster "{clean_title}" film official vertical'
         
     safe_query = urllib.parse.quote(query_str.strip())
     
-    # Bing URL: rs=1 ensures we don't get cropped thumbnails
+    # rs=1 for scaling, c=1 to crop smart
     return f"https://tse2.mm.bing.net/th?q={safe_query}&w=1000&rs=1"
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
@@ -1586,131 +1592,142 @@ async def process_search_results(
     bot_username: str = ""
 ) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     """
-    PREMIUM ENGINE V2: Fixed Pagination & Accurate Banners.
+    PROFESSIONAL ENGINE V3:
+    - Auto-Restore Session (Fixes 'End of Results')
+    - Strict Sorting (Fixes Wrong Banners)
+    - Premium UI
     """
-    limit_per_page = 7 # Increased slightly for better view
+    limit_per_page = 8 # Better density
     cache_key = f"search_res:{user_id}"
+    query_key = f"last_query:{user_id}"
     final_results = []
     
-    # 1. Cache Fetch
+    # --- STEP 1: RESTORE SESSION OR FETCH NEW ---
+    
+    # A. Try fetching existing results from Cache
     if redis_cache.is_ready():
         cached_data = await redis_cache.get(cache_key)
         if cached_data:
             try: final_results = json.loads(cached_data)
             except: pass
-    
-    # 2. CRITICAL FIX: Session Restoration (For Pagination)
-    # Agar cache empty hai aur query "ignored" hai (matlab user ne Next page dabaya)
-    # To hum purani query wapas layenge.
+
+    # B. If Cache Empty & Pagination Requested (The "End of Results" Fix)
+    # Agar user next page dabaya aur cache gayab hai, to hum dobara search karenge
     if not final_results and query == "ignored":
         if redis_cache.is_ready():
-            saved_query = await redis_cache.get(f"last_query:{user_id}")
+            saved_query = await redis_cache.get(query_key)
             if saved_query:
-                query = saved_query # Query Restore ho gayi!
+                query = saved_query # Query found! Re-run search logic below.
             else:
-                # Agar query mili hi nahi, to session expired
-                return "⌛ **Search Session Expired**\nSearch results cache se clear ho gaye hain. Kripya dobara search karein.", None, None
-
-    # 3. Live Search (Agar abhi bhi results nahi hain)
+                return "⚠️ **Session Expired**\nTap 'Search' again to refresh.", None, None
+    
+    # C. Execute Search (If results are missing)
     if not final_results and query != "ignored":
-        if not fuzzy_movie_cache: return "⚠️ **System warming up...** Try again in 10s.", None, None
+        if not fuzzy_movie_cache: return "⚠️ **System Indexing...** Wait 5s.", None, None
         
         loop = asyncio.get_running_loop()
-        # V7 Search call
         fuzzy_hits_raw = await loop.run_in_executor(
             executor, 
             partial(python_fuzzy_search, cache_snapshot=fuzzy_movie_cache), 
             query, 100
         )
         
-        # Deduplicate Logic
+        # Deduplicate & Sanitize
         seen_imdb = set()
         for movie in fuzzy_hits_raw:
             if movie['imdb_id'] not in seen_imdb:
-                final_results.append(movie)
-                seen_imdb.add(movie['imdb_id'])
+                # Basic sanity: Title must look real
+                if len(movie['title']) > 1: 
+                    final_results.append(movie)
+                    seen_imdb.add(movie['imdb_id'])
         
-        # Sort by Score
+        # 🔥 CRITICAL: Sort by Score High->Low
         final_results.sort(key=lambda x: x.get('score', 0), reverse=True)
         
-        # Save to Redis (TTL 10 Min)
+        # Cache Update
         if redis_cache.is_ready() and final_results:
-            await redis_cache.set(cache_key, json.dumps(final_results), ttl=600)
-            # Query bhi save karein fallback ke liye
-            await redis_cache.set(f"last_query:{user_id}", query, ttl=600)
+            await redis_cache.set(cache_key, json.dumps(final_results), ttl=900) # 15 Min Cache
+            if query != "ignored":
+                await redis_cache.set(query_key, query, ttl=900)
 
     if not final_results: return None, None, None
 
-    # 4. Pagination Slicing
+    # --- STEP 2: PAGINATION SLICING ---
     total_results = len(final_results)
     start_idx = page * limit_per_page
     end_idx = start_idx + limit_per_page
+    
+    # Safety Check
+    if start_idx >= total_results:
+        return "⚠️ **No More Results**", None, None
+        
     page_results = final_results[start_idx:end_idx]
 
-    if not page_results: return "🏁 End of results.", None, None
-
-    # --- 🎨 UI & POSTER LOGIC ---
+    # --- STEP 3: PROFESSIONAL UI GENERATION ---
     buttons = []
     poster_url = None
     
-    # === HEADER: TOP RESULT (Banner Generation) ===
+    # === HEADER: BEST MATCH (Page 0 Only) ===
     if page == 0:
         top_movie = page_results[0]
         
-        # 🔥 CRITICAL FIX: Use DB Title, NOT User Query
+        # Banner Data
+        t_title = top_movie.get('title', 'Unknown')
+        t_year = top_movie.get('year') or "N/A"
         t_id = top_movie.get('imdb_id', 'N/A')
-        t_title = top_movie.get('title', 'Unknown') 
-        t_year = top_movie.get('year') or ""
         
-        # Generate Poster using ACCURATE Data
+        # Smart Poster Fetch (Uses Clean Title)
         poster_url = get_poster_url(t_id, t_title, t_year)
-
+        
+        # Professional Text Layout
         text = (
-            f"🎬 **BEST MATCH FOUND**\n"
-            f"━━━━━━━━━━━━━━━━━━\n\n"
-            f"🍿 **{t_title}**\n"
-            f"📅 Year: {t_year}   ⭐️ ID: `{t_id}`\n\n"
-            f"👇 **Select from below:**"
+            f"🎬 **MOVIE PREMIERE**\n"
+            f"──────────────────\n\n"
+            f"🌟 **{t_title}**\n"
+            f"📅 Year: {t_year}  |  💿 Source: BluRay\n\n"
+            f"👇 **Download / Watch Now:**"
         )
         
-        # Highlighted Top Button
-        label = f"📥 Get {t_title}"
+        # Highlight Button
+        # Agar ID 'file_...' jaisa bada hai to user ko confuse mat karo, hidden rakho
+        label = f"📥 Download: {t_title}"
         if is_group:
             link = f"https://t.me/{bot_username}?start=get_{t_id}"
             buttons.append([InlineKeyboardButton(text=label, url=link)])
         else:
             buttons.append([InlineKeyboardButton(text=label, callback_data=f"get_{t_id}")])
             
-        # Divider for others
+        # Divider
         if len(page_results) > 1:
-            buttons.append([InlineKeyboardButton(text=f"🔻 — ALL RESULTS ({total_results}) — 🔻", callback_data="ignore")])
-        
-        # Baaki list (Item 0 ko repeat nahi karenge list mein taaki clean lage)
+            buttons.append([InlineKeyboardButton(text=f"🔻 — MORE RESULTS ({total_results}) — 🔻", callback_data="ignore")])
+            
         remaining_list = page_results[1:]
     else:
-        text = f"🔎 **Results Page {page+1}**"
+        text = f"🗂 **Library Page {page+1}**\nSelect a file below:"
         remaining_list = page_results
 
-    # === LIST GENERATION ===
+    # === DYNAMIC LIST ===
     for movie in remaining_list:
-        # UI Fix: Cleaner Button Text
-        display = f"{movie['title']}"
-        if movie.get('year'): display += f" ({movie['year']})"
-        display = display[:60] # Limit length
+        display_title = movie['title']
+        if movie.get('year'): display_title += f" ({movie['year']})"
+        
+        # Clean folder icon
+        btn_text = f"📁 {display_title[:55]}"
         
         if is_group:
             url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
-            buttons.append([InlineKeyboardButton(text=f"📂 {display}", url=url)])
+            buttons.append([InlineKeyboardButton(text=btn_text, url=url)])
         else:
-            buttons.append([InlineKeyboardButton(text=f"📂 {display}", callback_data=f"get_{movie['imdb_id']}")])
+            buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"get_{movie['imdb_id']}")])
 
-    # === FOOTER NAVIGATION ===
+    # === SMART FOOTER ===
     nav_row = []
     if page > 0: 
-        nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
+        nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
     
-    # Page Indicator (Center Button - Non Clickable)
-    nav_row.append(InlineKeyboardButton(text=f"📄 {page+1}/{int(total_results/limit_per_page)+1}", callback_data="ignore"))
+    # Page Counter (Visual Only)
+    total_pages = (total_results + limit_per_page - 1) // limit_per_page
+    nav_row.append(InlineKeyboardButton(text=f"📄 {page+1}/{total_pages}", callback_data="ignore"))
 
     if end_idx < total_results: 
         nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
