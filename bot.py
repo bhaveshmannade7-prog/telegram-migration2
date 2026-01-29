@@ -646,20 +646,32 @@ def get_quality_label(filename: str) -> str:
     return "🎬 Watch Now"
 def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
-    """
-    # SMART BANNER ENGINE
-   # ----------------------
-    1. Asli IMDb ID (tt...) hai? -> OMDb API se poster lekar banner banao.
-    2. Fake/Auto ID hai? -> Movie Title + Year se internet se poster dhundo.
-    Result: Hamesha ussi movie ka sahi banner milega.
+    SMART BANNER ENGINE
+    1. If Real IMDb ID (tt...): Gets poster from OMDb.
+    2. If Auto ID: Searches Poster by Title (Bing).
+    Result: Always returns a Valid Movie Banner.
     """
     # Option A: Agar asli IMDb ID hai (High Quality)
     if imdb_id and imdb_id.startswith("tt"):
-        omdb_key = "19f1d07c" # Free Public Key
+        # Free Public Key
+        omdb_key = "19f1d07c" 
         poster = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
         # Magic Resizer: Poster ko Banner me convert karta hai (400x200)
         return f"https://wsrv.nl/?url={poster}&w=400&h=200&fit=cover&a=top"
+    
+    # Option B: Fallback (Auto IDs ke liye) - Bing Image Search
+    import urllib.parse
+    # Title clean karein
+    clean_title = title.replace(".", " ").replace("-", " ").strip()
+    if not clean_title:
+        # Agar title khali hai to default banner
+        return "https://i.ibb.co/9pnt6qH/cinema-search-banner.jpg"
+        
+    search_query = f"{clean_title} {year} movie wide banner wallpaper".strip()
+    safe_query = urllib.parse.quote(search_query)
+    
+    # Bing se pehli image uthata hai (Free & Fast)
+    return f"https://tse2.mm.bing.net/th?q={safe_query}&w=400&h=200&c=7&rs=1"
     
     # Option B: Fallback (Auto IDs ke liye) - Bing Image Search
     import urllib.parse
