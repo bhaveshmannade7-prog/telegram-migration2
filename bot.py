@@ -1726,10 +1726,28 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
     # Store query for "Search in Bot" check later (optional) or stats
     if redis_cache.is_ready(): await redis_cache.set(f"last_query:{user.id}", query, ttl=600)
 
-    text, markup = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
+        # D. Process Search with Premium Image Support
+    # Note: process_search_results now returns 3 values
+    text, markup, poster = await process_search_results(query, user_id, redis_cache, page=0, is_group=False)
     
     if text:
-        await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
+        if poster:
+            # Delete "Searching..." text and send Photo
+            try:
+                await wait_msg.delete()
+            except: pass
+            
+            await safe_tg_call(
+                bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=poster,
+                    caption=text,
+                    reply_markup=markup
+                )
+            )
+        else:
+            # Text-only fallback
+            await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
     else:
         await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
 
@@ -1829,13 +1847,19 @@ async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cac
     bot_info = await bot.get_me()
     
     # Fetch results from Cache (Query is implied from cache)
-    text, markup = await process_search_results("ignored", user_id, redis_cache, page=page, is_group=is_group, bot_username=bot_info.username)
+        # Fetch results (Unpack 3 values)
+    text, markup, _ = await process_search_results("ignored", user_id, redis_cache, page=page, is_group=is_group, bot_username=bot_info.username)
 
     if text:
         try:
-            await callback.message.edit_text(text, reply_markup=markup)
+            # Support editing both Text and Caption
+            if callback.message.photo:
+                await callback.message.edit_caption(caption=text, reply_markup=markup)
+            else:
+                await callback.message.edit_text(text, reply_markup=markup)
         except Exception:
             await callback.answer("Updated.")
+
     else:
         await callback.answer("Page expired. Search again.", show_alert=True)
 
