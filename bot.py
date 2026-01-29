@@ -635,7 +635,25 @@ def parse_filename(filename: str) -> Dict[str, str | None]:
         title = re.sub(r"\s+", " ", title).strip()
         
     return {"title": title or "Untitled", "year": year}
+    # --- NEW: LIGHTWEIGHT QUALITY PARSER ---
+def get_quality_label(filename: str) -> str:
+    """Extracts quality from filename for buttons."""
+    f = filename.lower()
+    if "1080" in f: return "🔥 1080p Full HD"
+    if "720" in f: return "🎥 720p HD"
+    if "480" in f: return "📱 480p SD"
+    if "2160" in f or "4k" in f: return "🌟 4K UHD"
+    return "🎬 Watch Now"
 
+def get_poster_url(imdb_id: str) -> str:
+    """
+    Returns a Poster URL. 
+    1. If you have OMDb Key: Use f"http://img.omdbapi.com/?apikey=YOURKEY&i={imdb_id}"
+    2. Default: Uses a Premium 'Search' Banner to look professional without API costs.
+    """
+    # FREE TIER SAFE: Static banner, cached by Telegram automatically.
+    # Replace with your own banner URL if desired.
+    return "https://i.ibb.co/9pnt6qH/cinema-search-banner.jpg"
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
     return (
