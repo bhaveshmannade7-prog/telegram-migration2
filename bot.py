@@ -1676,7 +1676,7 @@ async def process_search_results(
     return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
     
 
-# --- 1. PRIVATE CHAT SEARCH HANDLER (FULL FIXED CODE) ---
+# --- 1. PRIVATE CHAT SEARCH HANDLER (WITH BANNER) ---
 @dp.message(
     StateFilter(None), 
     F.text, 
@@ -1703,15 +1703,7 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
     is_member = await check_user_membership(user.id, bot)
     if not is_member:
         join_markup = get_join_keyboard()
-        join_text = (
-            f"⛔️ **SEARCH LOCKED / सर्च लॉक है**\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"⚠️ **Action Required:**\n"
-            f"🇺🇸 You must join our backup channels to use this bot.\n"
-            f"🇮🇳 बोट का उपयोग करने के लिए आपको हमारे चैनल ज्वाइन करने होंगे।\n\n"
-            f"👇 **Join & Verify below:**"
-        )
-        await message.answer(join_text, reply_markup=join_markup)
+        await message.answer("⛔️ **SEARCH LOCKED**\nPlease join channels first.", reply_markup=join_markup)
         return
 
     # D. Process Search
@@ -1724,16 +1716,15 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
     
     if redis_cache.is_ready(): await redis_cache.set(f"last_query:{user.id}", query, ttl=600)
 
-    # ENGINE CALL (Handling 3 return values: text, markup, poster)
+    # FIX: Poster capture kar rahe hain
     text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
     
     if text:
         if poster:
-            # Image Result
-            try:
-                await wait_msg.delete()
+            try: await wait_msg.delete()
             except: pass
             
+            # Send Photo Banner
             await safe_tg_call(
                 bot.send_photo(
                     chat_id=message.chat.id,
@@ -1743,26 +1734,23 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
                 )
             )
         else:
-            # Text Only Result
             await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
     else:
         await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
-
-            
+    
         
-# --- 2. GROUP CHAT SEARCH HANDLER (ROBUST VERSION) ---
+# --- 2. GROUP CHAT SEARCH HANDLER (WITH BANNER SUPPORT) ---
 @dp.message(
     F.text,
     ~F.text.startswith("/"),
     F.chat.type.in_({"group", "supergroup"})
 )
 async def search_movie_handler_group(message: types.Message, bot: Bot, db_primary: Database, redis_cache: RedisCacheLayer):
-    # A. ROBUST AUTHORIZATION CHECK
+    # A. Authorization Check
     chat_id = message.chat.id
     chat_id_str = str(chat_id)
     chat_username = message.chat.username.lower() if message.chat.username else ""
     
-    # Check authorization
     is_authorized = False
     for auth_id in AUTHORIZED_GROUPS:
         clean_auth = auth_id.strip().lstrip('@').lower()
@@ -1770,21 +1758,18 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
             is_authorized = True
             break
 
-    if not is_authorized:
-        return 
+    if not is_authorized: return 
 
     user = message.from_user
     if not user: return
     
     # B. Spam Check
     spam_status = spam_guard.check_user(user.id)
-    if spam_status['status'] != 'ok':
-        return 
+    if spam_status['status'] != 'ok': return 
 
     # C. Join Check
     is_member = await check_user_membership(user.id, bot)
     
-    # Auto-Delete Helper
     async def delete_later(msgs_to_delete, delay=120):
         await asyncio.sleep(delay)
         for mid in msgs_to_delete:
@@ -1796,30 +1781,36 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
         join_text = (
             f"⚠️ **{user.first_name}**, Access Denied!\n"
             f"━━━━━━━━━━━━━━━━\n"
-            f"🇺🇸 To search in this group, you must join our channels first.\n"
-            f"🇮🇳 इस ग्रुप में सर्च करने के लिए पहले हमारे चैनल ज्वाइन करें।\n\n"
             f"👇 **Tap below to Join & Verify**"
         )
         alert_msg = await message.reply(join_text, reply_markup=join_markup)
         asyncio.create_task(delete_later([message.message_id, alert_msg.message_id], delay=30))
         return
 
-    # D. Search Logic (FIXED)
+    # D. Search Logic (BANNER ENABLED)
     query = clean_text_for_search(message.text)
     if len(query) < 2: return 
 
     bot_info = await bot.get_me()
     
-    # FIX: Group me 'poster' (3rd value) ko ignore karte hain (_) taki chat clean rahe
-    text, markup, _ = await process_search_results(query, user.id, redis_cache, page=0, is_group=True, bot_username=bot_info.username)
+    # FIX: 'poster' variable ko capture kiya (underscore _ hata diya)
+    text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=True, bot_username=bot_info.username)
 
     if text:
-        # Send Result
-        res_msg = await message.reply(text, reply_markup=markup)
-        # Schedule Delete (Query + Result)
+        if poster:
+            # Agar poster URL hai, to Photo bhejo
+            res_msg = await message.reply_photo(photo=poster, caption=text, reply_markup=markup)
+        else:
+            # Nahi to Text bhejo
+            res_msg = await message.reply(text, reply_markup=markup)
+            
+        # Schedule Delete
         asyncio.create_task(delete_later([message.message_id, res_msg.message_id], delay=120))
     else:
         pass
+
+    
+        
 # --- 3. PAGINATION CALLBACK (NEW) ---
 @dp.callback_query(F.data.startswith("psearch:"))
 async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cache: RedisCacheLayer):
