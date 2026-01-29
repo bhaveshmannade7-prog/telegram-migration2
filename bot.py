@@ -1715,26 +1715,16 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
         await message.answer(join_text, reply_markup=join_markup)
         return
 
-        # D. Process Search
-    query = clean_text_for_search(message.text)
-    if len(query) < 2:
-        await message.answer("⚠️ Query too short.")
-        return
-
-    wait_msg = await message.answer(f"🔎 Searching for '{query}'...")
-    
-    # Store query for "Search in Bot" check later (optional) or stats
-    if redis_cache.is_ready(): await redis_cache.set(f"last_query:{user.id}", query, ttl=600)
-
-    # --- FIX APPLIED HERE: user.id pass kiya hai (user_id nahi) ---
-    # Saath hi 3 values unpack ki hain: text, markup, poster
+            # D. Process Search
+    # FIX: Yahan 'user_id' ki jagah 'user.id' kar diya hai
+    # process_search_results ab 3 cheezein return karta hai: text, markup, poster
     text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
     
     if text:
         if poster:
-            # Agar Poster URL mila, to purana "Searching..." message delete karo aur Photo bhejo
+            # Agar poster URL mila hai to Photo bhejo
             try:
-                await wait_msg.delete()
+                await wait_msg.delete() # "Searching..." wala message delete karo
             except: pass
             
             await safe_tg_call(
@@ -1746,12 +1736,11 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
                 )
             )
         else:
-            # Agar Poster nahi mila, to text edit karo (Fallback)
+            # Agar poster nahi hai to Text edit karo
             await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
     else:
+        # Agar koi result nahi mila
         await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
-
-# --- 2. GROUP CHAT SEARCH HANDLER (STRICT MODE) ---
 # --- 2. GROUP CHAT SEARCH HANDLER (ROBUST VERSION) ---
 @dp.message(
     F.text,
