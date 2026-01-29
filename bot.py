@@ -646,18 +646,28 @@ def get_quality_label(filename: str) -> str:
     return "🎬 Watch Now"
 def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    SMART BANNER ENGINE
-    1. If Real IMDb ID (tt...): Gets poster from OMDb.
-    2. If Auto ID: Searches Poster by Title (Bing).
-    Result: Always returns a Valid Movie Banner.
+    SMART BANNER ENGINE (FULL SIZE)
+    1. Uses CORRECT title from DB (not user typo).
+    2. Returns Full Size Image (No Cropping).
     """
-    # Option A: Agar asli IMDb ID hai (High Quality)
+    # Clean title for search (Remove special chars)
+    search_title = title.replace(".", " ").replace("-", " ").strip()
+    
+    # Priority 1: Real IMDb ID -> OMDb (Vertical Poster)
     if imdb_id and imdb_id.startswith("tt"):
-        # Free Public Key
-        omdb_key = "19f1d07c" 
+        omdb_key = "19f1d07c"
         poster = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
-        # Magic Resizer: Poster ko Banner me convert karta hai (400x200)
-        return f"https://wsrv.nl/?url={poster}&w=400&h=200&fit=cover&a=top"
+        # Resize to max-width 1000px to save bandwidth, but KEEP aspect ratio (No Crop)
+        return f"https://wsrv.nl/?url={poster}&w=1000&output=jpg"
+
+    # Priority 2: Fallback -> Bing Search (Horizontal/Vertical Mix)
+    import urllib.parse
+    # Query: Correct Title + Year + "movie poster"
+    query_str = f"{search_title} {year} movie poster high resolution"
+    safe_query = urllib.parse.quote(query_str.strip())
+    
+    # Bing URL: w=1000 (Max Width), rs=1 (Resize Scale - No Crop)
+    return f"https://tse2.mm.bing.net/th?q={safe_query}&w=1000&rs=1"
     
     # Option B: Fallback (Auto IDs ke liye) - Bing Image Search
     import urllib.parse
@@ -1882,6 +1892,14 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
         await safe_tg_call(callback.answer("Error: User not found."))
         return
     
+    # --- NEW: Delete Search Result Immediately (Private Chat Only) ---
+    if callback.message.chat.type == "private":
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+    # ---------------------------------------------------------------
+
     # is_user_banned is an async method in database.py
     is_banned = await safe_db_call(db_primary.is_user_banned(user.id), default=False)
     if is_banned:
@@ -1903,10 +1921,11 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
                 f"🇮🇳 मूवी डाउनलोड करने के लिए आपको हमारे चैनल ज्वाइन करने होंगे।\n\n"
                 f"👇 **Join channels & Click Verify:**"
             )
+            # Agar message delete ho gaya hai (upar wale code se), to naya bhejo
             try:
-                await safe_tg_call(callback.message.edit_text(join_text, reply_markup=join_markup))
+                await safe_tg_call(bot.send_message(user.id, join_text, reply_markup=join_markup))
             except Exception:
-                await safe_tg_call(bot.send_message(user.id, join_text, reply_markup=join_markup), semaphore=TELEGRAM_COPY_SEMAPHORE)
+                pass
             return
 
     if not await ensure_capacity_or_inform(callback, db_primary, bot, redis_cache):
@@ -1942,7 +1961,8 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
             "• Instant direct files (सीधी फाइलें मिलेंगी)\n\n"
             "👇 **Tap 'Unlock' to start** / नीचे 'Unlock' पर क्लिक करें"
         )
-        await callback.message.edit_text(text=bilingual_locked_text, reply_markup=unlock_kb)
+        # Kyunki purana message delete ho chuka hai, naya bhejna padega
+        await safe_tg_call(bot.send_message(user.id, bilingual_locked_text, reply_markup=unlock_kb))
         asyncio.create_task(db_primary.track_event("shortlink_attempt"))
         return
 
@@ -1952,7 +1972,7 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
         movie = await safe_db_call(db_fallback.get_movie_by_imdb(imdb_id), timeout=DB_OP_TIMEOUT)
 
     if not movie:
-        await safe_tg_call(callback.message.edit_text("❌ **CONTENT UNAVAILABLE**\nThis title has been removed from the library."))
+        await safe_tg_call(bot.send_message(user.id, "❌ **CONTENT UNAVAILABLE**\nThis title has been removed from the library."))
         return
         
     success = False; error_detail = "System Failure"
@@ -2015,22 +2035,10 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
             f"🔥 **Delete hone se pehle ise Forward kar lein!**"
         )
         
-        warning_msg_id = None
-        # Deep Link Check (Fake callback ID '0' means group link)
-        if callback.id == '0':
-            sent_warning = await safe_tg_call(bot.send_message(chat_id=user.id, text=success_text))
-            if sent_warning: warning_msg_id = sent_warning.message_id
-            try: await safe_tg_call(bot.delete_message(chat_id=user.id, message_id=callback.message.message_id))
-            except: pass
-        else:
-            try:
-                await safe_tg_call(callback.message.edit_text(success_text))
-                warning_msg_id = callback.message.message_id
-            except:
-                sent_warning = await safe_tg_call(bot.send_message(chat_id=user.id, text=success_text))
-                if sent_warning: warning_msg_id = sent_warning.message_id
-
-        if warning_msg_id:
+        # New Message bhejenge kyunki purana delete ho gaya (Private chat me)
+        sent_warning = await safe_tg_call(bot.send_message(chat_id=user.id, text=success_text))
+        if sent_warning:
+             warning_msg_id = sent_warning.message_id
              asyncio.create_task(schedule_auto_delete(bot, user.id, sent_msg_id, warning_msg_id, delay=120))
         asyncio.create_task(send_sponsor_ad(user.id, bot, db_primary, redis_cache))
 
@@ -2043,10 +2051,8 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
             f"Reason: {error_detail}{admin_hint}\n\n"
             f"Please try again later."
         )
-        try:
-            await safe_tg_call(callback.message.edit_text(error_text))
-        except Exception:
-            await safe_tg_call(bot.send_message(user.id, error_text), semaphore=TELEGRAM_COPY_SEMAPHORE)
+        await safe_tg_call(bot.send_message(user.id, error_text))
+
 # =======================================================
 # +++++ BOT HANDLERS: ADMIN COMMANDS +++++
 # =======================================================
