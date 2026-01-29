@@ -644,18 +644,31 @@ def get_quality_label(filename: str) -> str:
     if "480" in f: return "📱 480p SD"
     if "2160" in f or "4k" in f: return "🌟 4K UHD"
     return "🎬 Watch Now"
-def get_poster_url(imdb_id: str) -> str:
+def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    Constructs a lightweight 'Netflix-style' Banner URL.
-    NO server processing. NO downloading.
+def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    # 1. Use OMDb to get the poster (Replace '19f1d07c' with your key if needed)
-    omdb_url = f"http://img.omdbapi.com/?apikey=19f1d07c&i={imdb_id}"
+    🌟 SMART BANNER ENGINE
+    ----------------------
+    1. Asli IMDb ID (tt...) hai? -> OMDb API se poster lekar banner banao.
+    2. Fake/Auto ID hai? -> Movie Title + Year se internet se poster dhundo.
+    Result: Hamesha ussi movie ka sahi banner milega.
+    """
+    # Option A: Agar asli IMDb ID hai (High Quality)
+    if imdb_id and imdb_id.startswith("tt"):
+        omdb_key = "19f1d07c" # Free Public Key
+        poster = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
+        # Magic Resizer: Poster ko Banner me convert karta hai (400x200)
+        return f"https://wsrv.nl/?url={poster}&w=400&h=200&fit=cover&a=top"
     
-    # 2. Use Cloud Resizer to make it a 'Small Banner' (400x200) on the fly
-    # fit=cover: Cuts extra parts to fill the banner
-    # a=top: Focuses on faces/top part
-    return f"https://wsrv.nl/?url={omdb_url}&w=400&h=200&fit=cover&a=top"
+    # Option B: Fallback (Auto IDs ke liye) - Bing Image Search
+    import urllib.parse
+    clean_title = title.replace(".", " ").replace("-", " ").strip()
+    search_query = f"{clean_title} {year} movie wide banner wallpaper".strip()
+    safe_query = urllib.parse.quote(search_query)
+    
+    # Bing se pehli image uthata hai (Free & Fast)
+    return f"https://tse2.mm.bing.net/th?q={safe_query}&w=400&h=200&c=7&rs=1"
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
     return (
@@ -1562,6 +1575,7 @@ async def banned_search_movie_handler_stub(message: types.Message): pass
 
 # --- REPLACEMENT CODE FOR SEARCH PROCESSING ---
 async def process_search_results(
+async def process_search_results(
     query: str, 
     user_id: int, 
     redis_cache: RedisCacheLayer, 
@@ -1570,24 +1584,24 @@ async def process_search_results(
     bot_username: str = ""
 ) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     """
-    Premium UX Engine: Groups results, adds Posters, and cleans layouts.
-    Returns: (Caption, Markup, Poster_URL)
+    💎 PREMIUM SEARCH ENGINE V8
+    Returns: (Premium Text, Buttons, Smart Banner URL)
     """
-    limit_per_page = 5 # Reduced to 5 for Card Layout (looks cleaner)
+    limit_per_page = 5 # Compact UI
     cache_key = f"search_res:{user_id}"
     final_results = []
     
-    # 1. Fetch Data (Cache or Engine)
+    # 1. Cache Fetch
     if redis_cache.is_ready():
         cached_data = await redis_cache.get(cache_key)
         if cached_data and page > 0:
             try: final_results = json.loads(cached_data)
             except: pass
     
+    # 2. Live Search (If no cache)
     if not final_results:
         if not fuzzy_movie_cache: return "⚠️ **System warming up...**", None, None
         
-        # Run Fuzzy Search
         loop = asyncio.get_running_loop()
         fuzzy_hits_raw = await loop.run_in_executor(
             executor, 
@@ -1595,73 +1609,78 @@ async def process_search_results(
             query, 100
         )
         
-        # SMART GROUPING LOGIC (The "Netflix" Effect)
-        # Groups different files of the same movie into one entry
+        # Smart Deduplication (Ek movie ID ek baar)
         seen_imdb = set()
         for movie in fuzzy_hits_raw:
             if movie['imdb_id'] not in seen_imdb:
                 final_results.append(movie)
                 seen_imdb.add(movie['imdb_id'])
         
-        # Sort by Score
+        # Sort by Relevance
         final_results.sort(key=lambda x: x.get('score', 0), reverse=True)
         
+        # Save to Cache
         if redis_cache.is_ready() and final_results:
             await redis_cache.set(cache_key, json.dumps(final_results), ttl=600)
 
     if not final_results: return None, None, None
 
-    # 2. Pagination
+    # 3. Pagination Slicing
     total_results = len(final_results)
     start_idx = page * limit_per_page
     end_idx = start_idx + limit_per_page
     page_results = final_results[start_idx:end_idx]
 
-    if not page_results: return "No more results.", None, None
+    if not page_results: return "🏁 End of results.", None, None
 
-    # 3. Build Premium Layout
+    # --- 🎨 UI CONSTRUCTION START ---
     buttons = []
     poster_url = None
     
-    # Header for Top Result (First page only)
-    if page == 0 and page_results:
+    # === HEADER: TOP RESULT (HERO SECTION) ===
+    if page == 0:
         top_movie = page_results[0]
-        poster_url = get_poster_url(top_movie['imdb_id'])
         
-        # Top Result is the "Hero" - displayed in Caption
-        hero_title = top_movie['title']
-        hero_year = f"({top_movie['year']})" if top_movie.get('year') else ""
+        # Extract Data for Smart Banner
+        t_id = top_movie.get('imdb_id', 'N/A')
+        t_title = top_movie.get('title', 'Unknown')
+        t_year = top_movie.get('year') or ""
+        
+        # 🌟 Call Smart Banner Function
+        poster_url = get_poster_url(t_id, t_title, t_year)
+
+        # 💎 Premium Caption Design
         text = (
-            f"🎬 **TOP MATCH**\n"
-            f"━━━━━━━━━━━━━━\n"
-            f"🍿 **{hero_title}** {hero_year}\n"
-            f"⭐️ **IMDb ID:** `{top_movie['imdb_id']}`\n\n"
-            f"👇 **Select Option Below:**"
+            f"🎬 **TOP MATCH FOUND**\n"
+            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+            f"🍿 **{t_title}**\n"
+            f"📅 Year: {t_year}   ⭐️ ID: `{t_id}`\n\n"
+            f"👇 **Download / Watch Below:**"
         )
         
-        # Add "Download" button for the Hero Movie
+        # Hero Button (Highlighted)
+        btn_text = f"📂 Get {t_title} ({t_year})"
         if is_group:
-            url = f"https://t.me/{bot_username}?start=get_{top_movie['imdb_id']}"
-            buttons.append([InlineKeyboardButton(text="📥 Download Top Match", url=url)])
+            link = f"https://t.me/{bot_username}?start=get_{t_id}"
+            buttons.append([InlineKeyboardButton(text="📥 Download Top Match Now", url=link)])
         else:
-            # We assume the user wants the best quality, but we give a generic label
-            buttons.append([InlineKeyboardButton(text="📂 Get Movie Files", callback_data=f"get_{top_movie['imdb_id']}")])
-        
-        # Separator for other results
-        if len(page_results) > 1:
-            buttons.append([InlineKeyboardButton(text="🔻 — MORE RESULTS — 🔻", callback_data="ignore")])
+            buttons.append([InlineKeyboardButton(text="✨ Click to Download Top Match", callback_data=f"get_{t_id}")])
             
-        # Remove top movie from list so we don't duplicate it in the list below
-        remaining_results = page_results[1:]
+        # Separator Button (Visual only)
+        if len(page_results) > 1:
+            buttons.append([InlineKeyboardButton(text="🔻 — MORE RESULTS BELOW — 🔻", callback_data="ignore")])
+        
+        # Remove top movie from standard list to avoid duplicate
+        remaining_list = page_results[1:]
     else:
         text = f"🔎 **Search Results** (Page {page+1})"
-        remaining_results = page_results
+        remaining_list = page_results
 
-    # List other results as compact buttons
-    for movie in remaining_results:
+    # === BODY: OTHER RESULTS ===
+    for movie in remaining_list:
         display = f"🎬 {movie['title']}"
         if movie.get('year'): display += f" ({movie['year']})"
-        display = display[:60] # Truncate
+        display = display[:60] # Truncate long titles
         
         if is_group:
             url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
@@ -1669,15 +1688,17 @@ async def process_search_results(
         else:
             buttons.append([InlineKeyboardButton(text=display, callback_data=f"get_{movie['imdb_id']}")])
 
-    # Navigation
+    # === FOOTER: NAVIGATION ===
     nav_row = []
-    if page > 0: nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
-    if end_idx < total_results: nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
+    if page > 0: 
+        nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
+    if end_idx < total_results: 
+        nav_row.append(InlineKeyboardButton(text="Next Page ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
+    
     if nav_row: buttons.append(nav_row)
 
     return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
-    
-
+      
 # --- 1. PRIVATE SEARCH (STRICT FALLBACK FLOW) ---
 @dp.message(
     StateFilter(None), 
