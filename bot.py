@@ -1762,7 +1762,7 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
     chat_id_str = str(chat_id)
     chat_username = message.chat.username.lower() if message.chat.username else ""
     
-    # Hum check karenge: Kya ID list mein hai? Ya bina @ wala username list mein hai?
+    # Check authorization
     is_authorized = False
     for auth_id in AUTHORIZED_GROUPS:
         clean_auth = auth_id.strip().lstrip('@').lower()
@@ -1771,24 +1771,17 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
             break
 
     if not is_authorized:
-        return # Authorized nahi hai toh chup-chap return
-
-    # B. EXCLUSION REMOVAL
-    # Agar aap usi group mein search chahte hain jise aapne JOIN_CHANNEL_USERNAME banaya hai,
-    # toh yahan koi extra filter mat lagaiye. Humne upar authorization check kar liya hai.
+        return 
 
     user = message.from_user
     if not user: return
     
-    # Baki code (Spam Check aur Join Check) ko as-is rehne dein...
     # B. Spam Check
     spam_status = spam_guard.check_user(user.id)
     if spam_status['status'] != 'ok':
-        # Group me shor nahi machana, bas ignore karo ya DM karo
         return 
 
-    # C. Join Check (Group member ko bhi channel join hona chahiye)
-    # Note: Bot group me admin hona chahiye 'delete_message' ke saath
+    # C. Join Check
     is_member = await check_user_membership(user.id, bot)
     
     # Auto-Delete Helper
@@ -1798,7 +1791,6 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
             try: await bot.delete_message(message.chat.id, mid)
             except: pass
 
-    # Agar member nahi hai -> Reply with Join Buttons -> Auto delete
     if not is_member:
         join_markup = get_join_keyboard()
         join_text = (
@@ -1809,40 +1801,25 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
             f"👇 **Tap below to Join & Verify**"
         )
         alert_msg = await message.reply(join_text, reply_markup=join_markup)
-        asyncio.create_task(delete_later([message.message_id, alert_msg.message_id], delay=30)) # 30s warning
+        asyncio.create_task(delete_later([message.message_id, alert_msg.message_id], delay=30))
         return
 
-            # D. Process Search with Premium Image Support
-    # FIX: Changed 'user_id' to 'user.id'
-    text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
+    # D. Search Logic (FIXED)
+    query = clean_text_for_search(message.text)
+    if len(query) < 2: return 
+
+    bot_info = await bot.get_me()
     
+    # FIX: Group me 'poster' (3rd value) ko ignore karte hain (_) taki chat clean rahe
+    text, markup, _ = await process_search_results(query, user.id, redis_cache, page=0, is_group=True, bot_username=bot_info.username)
+
     if text:
-        if poster:
-            # Delete "Searching..." text and send Photo
-            try:
-                await wait_msg.delete()
-            except: pass
-            
-            await safe_tg_call(
-                bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=poster,
-                    caption=text,
-                    reply_markup=markup
-                )
-            )
-        else:
-            # Text-only fallback
-            await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
-    else:
-        await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
-
+        # Send Result
+        res_msg = await message.reply(text, reply_markup=markup)
         # Schedule Delete (Query + Result)
-        asyncio.create_task(delete_later([message.message_id, res_msg.message_id], delay=120)) # 2 Minutes
+        asyncio.create_task(delete_later([message.message_id, res_msg.message_id], delay=120))
     else:
-        # Group me "No Result" bhejna spam ho sakta hai, ise skip kar sakte hain ya short msg bhej ke delete karein
-        pass 
-
+        pass
 # --- 3. PAGINATION CALLBACK (NEW) ---
 @dp.callback_query(F.data.startswith("psearch:"))
 async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cache: RedisCacheLayer):
