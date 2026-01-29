@@ -646,20 +646,31 @@ def get_quality_label(filename: str) -> str:
     return "🎬 Watch Now"
 def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    SMART BANNER ENGINE (FULL SIZE)
-    1. Uses CORRECT title from DB (not user typo).
-    2. Returns Full Size Image (No Cropping).
+    SMART BANNER ENGINE V9 (ACCURACY FIX)
+    1. Force-search using the DATABASE TITLE (Correct Spelling).
+    2. Use Quotes "" in Bing Query to prevent fuzzy image matching.
+    3. Return Full Size Image (No Crop).
     """
-    # Clean title for search (Remove special chars)
+    # Clean title but keep exact wording
     search_title = title.replace(".", " ").replace("-", " ").strip()
     
-    # Priority 1: Real IMDb ID -> OMDb (Vertical Poster)
+    # Priority 1: Real IMDb ID -> OMDb (Vertical High-Res)
     if imdb_id and imdb_id.startswith("tt"):
         omdb_key = "19f1d07c"
         poster = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
-        # Resize to max-width 1000px to save bandwidth, but KEEP aspect ratio (No Crop)
+        # w=1000: High quality, output=jpg: Lightweight
         return f"https://wsrv.nl/?url={poster}&w=1000&output=jpg"
 
+    # Priority 2: Fallback -> Bing Search (For Auto IDs)
+    import urllib.parse
+    
+    # 🔥 TRICK: Quotes "" lagane se Bing EXACT title dhundega
+    # Example Query: movie poster "Pushpa 2" 2024
+    query_str = f'movie poster "{search_title}" {year}'
+    safe_query = urllib.parse.quote(query_str.strip())
+    
+    # Bing URL: rs=1 (Resize Scale - Full Image, No Crop)
+    return f"https://tse2.mm.bing.net/th?q={safe_query}&w=1000&rs=1"
     # Priority 2: Fallback -> Bing Search (Horizontal/Vertical Mix)
     import urllib.parse
     # Query: Correct Title + Year + "movie poster"
@@ -1605,10 +1616,9 @@ async def process_search_results(
     bot_username: str = ""
 ) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     """
-    💎 PREMIUM SEARCH ENGINE V8
-    Returns: (Premium Text, Buttons, Smart Banner URL)
+    PREMIUM ENGINE: Passes Correct Title to Poster Generator.
     """
-    limit_per_page = 5 # Compact UI
+    limit_per_page = 5
     cache_key = f"search_res:{user_id}"
     final_results = []
     
@@ -1619,7 +1629,7 @@ async def process_search_results(
             try: final_results = json.loads(cached_data)
             except: pass
     
-    # 2. Live Search (If no cache)
+    # 2. Live Search
     if not final_results:
         if not fuzzy_movie_cache: return "⚠️ **System warming up...**", None, None
         
@@ -1630,23 +1640,22 @@ async def process_search_results(
             query, 100
         )
         
-        # Smart Deduplication (Ek movie ID ek baar)
+        # Deduplicate
         seen_imdb = set()
         for movie in fuzzy_hits_raw:
             if movie['imdb_id'] not in seen_imdb:
                 final_results.append(movie)
                 seen_imdb.add(movie['imdb_id'])
         
-        # Sort by Relevance
+        # Sort by Accuracy (Score)
         final_results.sort(key=lambda x: x.get('score', 0), reverse=True)
         
-        # Save to Cache
         if redis_cache.is_ready() and final_results:
             await redis_cache.set(cache_key, json.dumps(final_results), ttl=600)
 
     if not final_results: return None, None, None
 
-    # 3. Pagination Slicing
+    # 3. Pagination
     total_results = len(final_results)
     start_idx = page * limit_per_page
     end_idx = start_idx + limit_per_page
@@ -1654,23 +1663,24 @@ async def process_search_results(
 
     if not page_results: return "🏁 End of results.", None, None
 
-    # --- 🎨 UI CONSTRUCTION START ---
+    # --- 🎨 UI & POSTER LOGIC ---
     buttons = []
     poster_url = None
     
-    # === HEADER: TOP RESULT (HERO SECTION) ===
+    # === HEADER: TOP RESULT ===
     if page == 0:
         top_movie = page_results[0]
         
-        # Extract Data for Smart Banner
+        # 🔥 CRITICAL: Extract CORRECT Title from DB Result (Not User Query)
+        # Isse hi 100% accurate banner ayega
         t_id = top_movie.get('imdb_id', 'N/A')
-        t_title = top_movie.get('title', 'Unknown')
+        t_title = top_movie.get('title', 'Unknown') 
         t_year = top_movie.get('year') or ""
         
-        # 🌟 Call Smart Banner Function
+        # Generate Poster using CORRECT Data
         poster_url = get_poster_url(t_id, t_title, t_year)
 
-        # 💎 Premium Caption Design
+        # UI Text
         text = (
             f"🎬 **TOP MATCH FOUND**\n"
             f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
@@ -1679,29 +1689,28 @@ async def process_search_results(
             f"👇 **Download / Watch Below:**"
         )
         
-        # Hero Button (Highlighted)
-        btn_text = f"📂 Get {t_title} ({t_year})"
+        # Highlighted Button
+        btn_text = f"📂 Get {t_title}"
         if is_group:
             link = f"https://t.me/{bot_username}?start=get_{t_id}"
             buttons.append([InlineKeyboardButton(text="📥 Download Top Match Now", url=link)])
         else:
             buttons.append([InlineKeyboardButton(text="✨ Click to Download Top Match", callback_data=f"get_{t_id}")])
             
-        # Separator Button (Visual only)
+        # Divider
         if len(page_results) > 1:
             buttons.append([InlineKeyboardButton(text="🔻 — MORE RESULTS BELOW — 🔻", callback_data="ignore")])
         
-        # Remove top movie from standard list to avoid duplicate
         remaining_list = page_results[1:]
     else:
         text = f"🔎 **Search Results** (Page {page+1})"
         remaining_list = page_results
 
-    # === BODY: OTHER RESULTS ===
+    # === BODY ===
     for movie in remaining_list:
         display = f"🎬 {movie['title']}"
         if movie.get('year'): display += f" ({movie['year']})"
-        display = display[:60] # Truncate long titles
+        display = display[:60]
         
         if is_group:
             url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
@@ -1709,7 +1718,7 @@ async def process_search_results(
         else:
             buttons.append([InlineKeyboardButton(text=display, callback_data=f"get_{movie['imdb_id']}")])
 
-    # === FOOTER: NAVIGATION ===
+    # === FOOTER ===
     nav_row = []
     if page > 0: 
         nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
@@ -1718,8 +1727,7 @@ async def process_search_results(
     
     if nav_row: buttons.append(nav_row)
 
-    return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
-      
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url      
 # --- 1. PRIVATE SEARCH (AUTO-DELETE: 4 MIN) ---
 @dp.message(
     StateFilter(None), 
