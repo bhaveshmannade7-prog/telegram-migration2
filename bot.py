@@ -644,16 +644,10 @@ def get_quality_label(filename: str) -> str:
     if "480" in f: return "📱 480p SD"
     if "2160" in f or "4k" in f: return "🌟 4K UHD"
     return "🎬 Watch Now"
-
 def get_poster_url(imdb_id: str) -> str:
-    """
-    Returns a Poster URL. 
-    1. If you have OMDb Key: Use f"http://img.omdbapi.com/?apikey=YOURKEY&i={imdb_id}"
-    2. Default: Uses a Premium 'Search' Banner to look professional without API costs.
-    """
-    # FREE TIER SAFE: Static banner, cached by Telegram automatically.
-    # Replace with your own banner URL if desired.
-    return "https://i.ibb.co/9pnt6qH/cinema-search-banner.jpg"
+    """Returns a Poster URL. Fallback to a reliable static image."""
+    # OMDb API use kar sakte hain agar key hai, nahi to ye static image:
+    return "https://upload.wikimedia.org/wikipedia/commons/thumb/6/69/IMDB_Logo_2016.svg/575px-IMDB_Logo_2016.svg.png"
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
     return (
@@ -1676,7 +1670,7 @@ async def process_search_results(
     return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
     
 
-# --- 1. PRIVATE CHAT SEARCH HANDLER (WITH BANNER) ---
+# --- 1. PRIVATE CHAT SEARCH HANDLER (FAIL-SAFE MODE) ---
 @dp.message(
     StateFilter(None), 
     F.text, 
@@ -1716,37 +1710,45 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
     
     if redis_cache.is_ready(): await redis_cache.set(f"last_query:{user.id}", query, ttl=600)
 
-    # FIX: Poster capture kar rahe hain
+    # 3 values unpack kar rahe hain (text, markup, poster)
     text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
     
     if text:
+        sent_success = False
+        
+        # 1. Try sending Photo first (agar poster hai)
         if poster:
-            try: await wait_msg.delete()
-            except: pass
-            
-            # Send Photo Banner
-            await safe_tg_call(
-                bot.send_photo(
+            try:
+                await bot.send_photo(
                     chat_id=message.chat.id,
                     photo=poster,
                     caption=text,
                     reply_markup=markup
                 )
-            )
-        else:
+                sent_success = True
+                # Photo chali gayi, ab wait msg delete karo
+                try: await wait_msg.delete()
+                except: pass
+            except Exception as e:
+                # Agar photo fail hui, to error ignore karo aur text bhejo
+                logger.error(f"Failed to send photo in private: {e}")
+                sent_success = False
+        
+        # 2. Agar Poster nahi tha ya Photo fail ho gayi -> Edit Wait Msg to Text
+        if not sent_success:
             await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
     else:
         await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
     
         
-# --- 2. GROUP CHAT SEARCH HANDLER (WITH BANNER SUPPORT) ---
+# --- 2. GROUP CHAT SEARCH HANDLER (FAIL-SAFE MODE) ---
 @dp.message(
     F.text,
     ~F.text.startswith("/"),
     F.chat.type.in_({"group", "supergroup"})
 )
 async def search_movie_handler_group(message: types.Message, bot: Bot, db_primary: Database, redis_cache: RedisCacheLayer):
-    # A. Authorization Check
+    # A. Authorization Check (Ye check karein ki aapka group ID AUTHORIZED_GROUPS env me hai)
     chat_id = message.chat.id
     chat_id_str = str(chat_id)
     chat_username = message.chat.username.lower() if message.chat.username else ""
@@ -1780,36 +1782,38 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
         join_markup = get_join_keyboard()
         join_text = (
             f"⚠️ **{user.first_name}**, Access Denied!\n"
-            f"━━━━━━━━━━━━━━━━\n"
             f"👇 **Tap below to Join & Verify**"
         )
         alert_msg = await message.reply(join_text, reply_markup=join_markup)
         asyncio.create_task(delete_later([message.message_id, alert_msg.message_id], delay=30))
         return
 
-    # D. Search Logic (BANNER ENABLED)
+    # D. Search Logic
     query = clean_text_for_search(message.text)
     if len(query) < 2: return 
 
     bot_info = await bot.get_me()
     
-    # FIX: 'poster' variable ko capture kiya (underscore _ hata diya)
+    # Poster capture karo
     text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=True, bot_username=bot_info.username)
 
     if text:
+        res_msg = None
+        # 1. Try sending Photo
         if poster:
-            # Agar poster URL hai, to Photo bhejo
-            res_msg = await message.reply_photo(photo=poster, caption=text, reply_markup=markup)
-        else:
-            # Nahi to Text bhejo
+            try:
+                res_msg = await message.reply_photo(photo=poster, caption=text, reply_markup=markup)
+            except Exception as e:
+                logger.error(f"Group photo send failed: {e}")
+                res_msg = None
+        
+        # 2. Fallback to Text if photo failed or no poster
+        if not res_msg:
             res_msg = await message.reply(text, reply_markup=markup)
             
         # Schedule Delete
-        asyncio.create_task(delete_later([message.message_id, res_msg.message_id], delay=120))
-    else:
-        pass
-
-    
+        if res_msg:
+            asyncio.create_task(delete_later([message.message_id, res_msg.message_id], delay=120))
         
 # --- 3. PAGINATION CALLBACK (NEW) ---
 @dp.callback_query(F.data.startswith("psearch:"))
