@@ -1676,7 +1676,7 @@ async def process_search_results(
     return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
     
 
-# --- 1. PRIVATE CHAT SEARCH HANDLER ---
+# --- 1. PRIVATE CHAT SEARCH HANDLER (FULL FIXED CODE) ---
 @dp.message(
     StateFilter(None), 
     F.text, 
@@ -1688,14 +1688,13 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
     user = message.from_user
     if not user: return
 
-    # A. Spam Check (NEW)
+    # A. Spam Check
     spam_status = spam_guard.check_user(user.id)
     if spam_status['status'] != 'ok':
         if spam_status['status'] == 'ban_now':
-            # Notify Admin
-            await safe_tg_call(bot.send_message(ADMIN_USER_ID, f"🚨 **SPAM ALERT**\nUser: {user.id} (@{user.username})\nAction: Blocked for 1h."))
-            await message.answer(f"🚫 **System Blocked**\n\nYou are searching too fast. Access restricted for {int(spam_status['remaining']/60)} minutes.")
-        return # Stop execution
+            await safe_tg_call(bot.send_message(ADMIN_USER_ID, f"🚨 **SPAM ALERT**\nUser: {user.id}\nAction: Blocked."))
+            await message.answer(f"🚫 **System Blocked**\n\nYou are searching too fast.")
+        return 
 
     # B. Capacity Check
     if not await ensure_capacity_or_inform(message, db_primary, bot, redis_cache): return
@@ -1715,16 +1714,24 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
         await message.answer(join_text, reply_markup=join_markup)
         return
 
-            # D. Process Search
-    # FIX: Yahan 'user_id' ki jagah 'user.id' kar diya hai
-    # process_search_results ab 3 cheezein return karta hai: text, markup, poster
+    # D. Process Search
+    query = clean_text_for_search(message.text)
+    if len(query) < 2:
+        await message.answer("⚠️ Query too short.")
+        return
+
+    wait_msg = await message.answer(f"🔎 Searching for '{query}'...")
+    
+    if redis_cache.is_ready(): await redis_cache.set(f"last_query:{user.id}", query, ttl=600)
+
+    # ENGINE CALL (Handling 3 return values: text, markup, poster)
     text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
     
     if text:
         if poster:
-            # Agar poster URL mila hai to Photo bhejo
+            # Image Result
             try:
-                await wait_msg.delete() # "Searching..." wala message delete karo
+                await wait_msg.delete()
             except: pass
             
             await safe_tg_call(
@@ -1736,11 +1743,13 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
                 )
             )
         else:
-            # Agar poster nahi hai to Text edit karo
+            # Text Only Result
             await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
     else:
-        # Agar koi result nahi mila
         await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
+
+            
+        
 # --- 2. GROUP CHAT SEARCH HANDLER (ROBUST VERSION) ---
 @dp.message(
     F.text,
