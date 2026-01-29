@@ -645,9 +645,17 @@ def get_quality_label(filename: str) -> str:
     if "2160" in f or "4k" in f: return "🌟 4K UHD"
     return "🎬 Watch Now"
 def get_poster_url(imdb_id: str) -> str:
-    """Returns a Poster URL. Fallback to a reliable static image."""
-    # OMDb API use kar sakte hain agar key hai, nahi to ye static image:
-    return "https://upload.wikimedia.org/wikipedia/commons/thumb/6/69/IMDB_Logo_2016.svg/575px-IMDB_Logo_2016.svg.png"
+    """
+    Constructs a lightweight 'Netflix-style' Banner URL.
+    NO server processing. NO downloading.
+    """
+    # 1. Use OMDb to get the poster (Replace '19f1d07c' with your key if needed)
+    omdb_url = f"http://img.omdbapi.com/?apikey=19f1d07c&i={imdb_id}"
+    
+    # 2. Use Cloud Resizer to make it a 'Small Banner' (400x200) on the fly
+    # fit=cover: Cuts extra parts to fill the banner
+    # a=top: Focuses on faces/top part
+    return f"https://wsrv.nl/?url={omdb_url}&w=400&h=200&fit=cover&a=top"
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
     return (
@@ -1670,7 +1678,7 @@ async def process_search_results(
     return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
     
 
-# --- 1. PRIVATE CHAT SEARCH HANDLER (FAIL-SAFE MODE) ---
+# --- 1. PRIVATE SEARCH (STRICT FALLBACK FLOW) ---
 @dp.message(
     StateFilter(None), 
     F.text, 
@@ -1682,139 +1690,113 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
     user = message.from_user
     if not user: return
 
-    # A. Spam Check
+    # A. Security Checks
     spam_status = spam_guard.check_user(user.id)
-    if spam_status['status'] != 'ok':
-        if spam_status['status'] == 'ban_now':
-            await safe_tg_call(bot.send_message(ADMIN_USER_ID, f"🚨 **SPAM ALERT**\nUser: {user.id}\nAction: Blocked."))
-            await message.answer(f"🚫 **System Blocked**\n\nYou are searching too fast.")
-        return 
-
-    # B. Capacity Check
+    if spam_status['status'] != 'ok': return 
     if not await ensure_capacity_or_inform(message, db_primary, bot, redis_cache): return
-
-    # C. Join Check
     is_member = await check_user_membership(user.id, bot)
     if not is_member:
-        join_markup = get_join_keyboard()
-        await message.answer("⛔️ **SEARCH LOCKED**\nPlease join channels first.", reply_markup=join_markup)
+        await message.answer("⛔️ **ACCESS DENIED**\nPlease join our channels first.", reply_markup=get_join_keyboard())
         return
 
-    # D. Process Search
+    # B. Input & Feedback
     query = clean_text_for_search(message.text)
     if len(query) < 2:
         await message.answer("⚠️ Query too short.")
         return
 
     wait_msg = await message.answer(f"🔎 Searching for '{query}'...")
-    
     if redis_cache.is_ready(): await redis_cache.set(f"last_query:{user.id}", query, ttl=600)
 
-    # 3 values unpack kar rahe hain (text, markup, poster)
-    text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
+    # C. ENGINE CALL (Gets Text, Buttons, and Banner URL)
+    text, markup, poster_url = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
     
-    if text:
-        sent_success = False
-        
-        # 1. Try sending Photo first (agar poster hai)
-        if poster:
-            try:
-                await bot.send_photo(
-                    chat_id=message.chat.id,
-                    photo=poster,
-                    caption=text,
-                    reply_markup=markup
-                )
-                sent_success = True
-                # Photo chali gayi, ab wait msg delete karo
-                try: await wait_msg.delete()
-                except: pass
-            except Exception as e:
-                # Agar photo fail hui, to error ignore karo aur text bhejo
-                logger.error(f"Failed to send photo in private: {e}")
-                sent_success = False
-        
-        # 2. Agar Poster nahi tha ya Photo fail ho gayi -> Edit Wait Msg to Text
-        if not sent_success:
-            await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
-    else:
+    if not text:
         await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
+        return
+
+    # D. DELIVERY FLOW (TRY PHOTO -> CATCH -> TEXT)
+    success = False
     
-        
-# --- 2. GROUP CHAT SEARCH HANDLER (FAIL-SAFE MODE) ---
+    if poster_url:
+        try:
+            # Attempt 1: Send Photo
+            await bot.send_photo(
+                chat_id=message.chat.id,
+                photo=poster_url,
+                caption=text,
+                reply_markup=markup
+            )
+            success = True
+            try: await wait_msg.delete() # Cleanup "Searching..."
+            except: pass
+        except Exception as e:
+            # Log error but DO NOT stop
+            logger.warning(f"Banner send failed (Private): {e}")
+            success = False
+    
+    # E. FALLBACK (If Photo failed OR No Poster)
+    if not success:
+        await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))      
+# --- 2. GROUP SEARCH (STRICT FALLBACK FLOW) ---
 @dp.message(
     F.text,
     ~F.text.startswith("/"),
     F.chat.type.in_({"group", "supergroup"})
 )
 async def search_movie_handler_group(message: types.Message, bot: Bot, db_primary: Database, redis_cache: RedisCacheLayer):
-    # A. Authorization Check (Ye check karein ki aapka group ID AUTHORIZED_GROUPS env me hai)
-    chat_id = message.chat.id
-    chat_id_str = str(chat_id)
-    chat_username = message.chat.username.lower() if message.chat.username else ""
+    # A. Authorization & Checks
+    chat_id = str(message.chat.id)
+    chat_user = message.chat.username.lower() if message.chat.username else ""
+    is_auth = False
+    for g in AUTHORIZED_GROUPS:
+        clean = g.strip().lstrip('@').lower()
+        if chat_id == g.strip() or chat_user == clean:
+            is_auth = True; break
     
-    is_authorized = False
-    for auth_id in AUTHORIZED_GROUPS:
-        clean_auth = auth_id.strip().lstrip('@').lower()
-        if chat_id_str == auth_id.strip() or chat_username == clean_auth:
-            is_authorized = True
-            break
-
-    if not is_authorized: return 
-
+    if not is_auth: return
+    
     user = message.from_user
-    if not user: return
-    
-    # B. Spam Check
-    spam_status = spam_guard.check_user(user.id)
-    if spam_status['status'] != 'ok': return 
+    if not user or spam_guard.check_user(user.id)['status'] != 'ok': return
 
-    # C. Join Check
     is_member = await check_user_membership(user.id, bot)
     
-    async def delete_later(msgs_to_delete, delay=120):
-        await asyncio.sleep(delay)
-        for mid in msgs_to_delete:
-            try: await bot.delete_message(message.chat.id, mid)
+    async def auto_del(m_ids):
+        await asyncio.sleep(120)
+        for m in m_ids:
+            try: await bot.delete_message(message.chat.id, m)
             except: pass
 
     if not is_member:
-        join_markup = get_join_keyboard()
-        join_text = (
-            f"⚠️ **{user.first_name}**, Access Denied!\n"
-            f"👇 **Tap below to Join & Verify**"
-        )
-        alert_msg = await message.reply(join_text, reply_markup=join_markup)
-        asyncio.create_task(delete_later([message.message_id, alert_msg.message_id], delay=30))
+        alert = await message.reply("⚠️ **Access Denied**: Join channels to search.", reply_markup=get_join_keyboard())
+        asyncio.create_task(auto_del([message.message_id, alert.message_id]))
         return
 
-    # D. Search Logic
+    # B. Search Logic
     query = clean_text_for_search(message.text)
     if len(query) < 2: return 
 
     bot_info = await bot.get_me()
-    
-    # Poster capture karo
-    text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=True, bot_username=bot_info.username)
+    text, markup, poster_url = await process_search_results(query, user.id, redis_cache, page=0, is_group=True, bot_username=bot_info.username)
 
-    if text:
-        res_msg = None
-        # 1. Try sending Photo
-        if poster:
-            try:
-                res_msg = await message.reply_photo(photo=poster, caption=text, reply_markup=markup)
-            except Exception as e:
-                logger.error(f"Group photo send failed: {e}")
-                res_msg = None
+    if not text: return
+
+    # C. DELIVERY FLOW (TRY PHOTO -> CATCH -> TEXT)
+    res_msg = None
+    
+    if poster_url:
+        try:
+            res_msg = await message.reply_photo(photo=poster_url, caption=text, reply_markup=markup)
+        except Exception:
+            res_msg = None # Mark as failed
+    
+    # D. FALLBACK (Immediate Text Reply)
+    if not res_msg:
+        res_msg = await message.reply(text, reply_markup=markup)
         
-        # 2. Fallback to Text if photo failed or no poster
-        if not res_msg:
-            res_msg = await message.reply(text, reply_markup=markup)
-            
-        # Schedule Delete
-        if res_msg:
-            asyncio.create_task(delete_later([message.message_id, res_msg.message_id], delay=120))
-        
+    if res_msg:
+        asyncio.create_task(auto_del([message.message_id, res_msg.message_id]))
+
 # --- 3. PAGINATION CALLBACK (NEW) ---
 @dp.callback_query(F.data.startswith("psearch:"))
 async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cache: RedisCacheLayer):
