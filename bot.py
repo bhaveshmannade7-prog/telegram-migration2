@@ -648,8 +648,8 @@ def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
 def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    🌟 SMART BANNER ENGINE
-    ----------------------
+    # SMART BANNER ENGINE
+   # ----------------------
     1. Asli IMDb ID (tt...) hai? -> OMDb API se poster lekar banner banao.
     2. Fake/Auto ID hai? -> Movie Title + Year se internet se poster dhundo.
     Result: Hamesha ussi movie ka sahi banner milega.
