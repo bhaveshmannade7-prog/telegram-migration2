@@ -1715,7 +1715,7 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
         await message.answer(join_text, reply_markup=join_markup)
         return
 
-    # D. Process Search
+        # D. Process Search
     query = clean_text_for_search(message.text)
     if len(query) < 2:
         await message.answer("⚠️ Query too short.")
@@ -1726,13 +1726,13 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
     # Store query for "Search in Bot" check later (optional) or stats
     if redis_cache.is_ready(): await redis_cache.set(f"last_query:{user.id}", query, ttl=600)
 
-        # D. Process Search with Premium Image Support
-    # Note: process_search_results now returns 3 values
-    text, markup, poster = await process_search_results(query, user_id, redis_cache, page=0, is_group=False)
+    # --- FIX APPLIED HERE: user.id pass kiya hai (user_id nahi) ---
+    # Saath hi 3 values unpack ki hain: text, markup, poster
+    text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
     
     if text:
         if poster:
-            # Delete "Searching..." text and send Photo
+            # Agar Poster URL mila, to purana "Searching..." message delete karo aur Photo bhejo
             try:
                 await wait_msg.delete()
             except: pass
@@ -1746,11 +1746,10 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
                 )
             )
         else:
-            # Text-only fallback
+            # Agar Poster nahi mila, to text edit karo (Fallback)
             await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
     else:
         await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
-
 
 # --- 2. GROUP CHAT SEARCH HANDLER (STRICT MODE) ---
 # --- 2. GROUP CHAT SEARCH HANDLER (ROBUST VERSION) ---
