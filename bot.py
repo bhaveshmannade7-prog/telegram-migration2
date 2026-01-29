@@ -1587,7 +1587,6 @@ async def banned_search_movie_handler_stub(message: types.Message): pass
 
 # --- REPLACEMENT CODE FOR SEARCH PROCESSING ---
 async def process_search_results(
-async def process_search_results(
     query: str, 
     user_id: int, 
     redis_cache: RedisCacheLayer, 
