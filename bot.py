@@ -1560,102 +1560,121 @@ async def banned_search_movie_handler_stub(message: types.Message): pass
 
 # --- REPLACEMENT CODE FOR SEARCH PROCESSING ---
 async def process_search_results(
+async def process_search_results(
     query: str, 
     user_id: int, 
     redis_cache: RedisCacheLayer, 
     page: int = 0, 
     is_group: bool = False,
     bot_username: str = ""
-) -> tuple[str, InlineKeyboardMarkup | None]:
+) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     """
-    Common logic to fetch results and build pagination keyboard.
-    Optimized to prevent RAM spikes (No .copy() used).
+    Premium UX Engine: Groups results, adds Posters, and cleans layouts.
+    Returns: (Caption, Markup, Poster_URL)
     """
-    limit_per_page = 10 
-    
-    # 1. Try fetching from Redis Cache first
+    limit_per_page = 5 # Reduced to 5 for Card Layout (looks cleaner)
     cache_key = f"search_res:{user_id}"
     final_results = []
     
+    # 1. Fetch Data (Cache or Engine)
     if redis_cache.is_ready():
         cached_data = await redis_cache.get(cache_key)
         if cached_data and page > 0:
             try: final_results = json.loads(cached_data)
             except: pass
     
-    # 2. If no cache or page 0, run V7 Engine
     if not final_results:
-        # CRITICAL FIX: Check if cache is actually populated
-        if not fuzzy_movie_cache:
-            return "⚠️ **System is warming up...**\nPlease try searching again in 10-15 seconds.", None
-
-        loop = asyncio.get_running_loop()
+        if not fuzzy_movie_cache: return "⚠️ **System warming up...**", None, None
         
-        # CRITICAL FIX: Do NOT use .copy(). Pass reference safely.
-        # partial ensures we pass the current state of fuzzy_movie_cache without duplicating 50MB in RAM
+        # Run Fuzzy Search
+        loop = asyncio.get_running_loop()
         fuzzy_hits_raw = await loop.run_in_executor(
             executor, 
             partial(python_fuzzy_search, cache_snapshot=fuzzy_movie_cache), 
-            query, 
-            200
+            query, 100
         )
         
-        unique_movies = {}
+        # SMART GROUPING LOGIC (The "Netflix" Effect)
+        # Groups different files of the same movie into one entry
+        seen_imdb = set()
         for movie in fuzzy_hits_raw:
-            if movie.get('imdb_id') and movie['imdb_id'] not in unique_movies:
-                unique_movies[movie['imdb_id']] = movie
+            if movie['imdb_id'] not in seen_imdb:
+                final_results.append(movie)
+                seen_imdb.add(movie['imdb_id'])
         
-        final_results = list(unique_movies.values())
+        # Sort by Score
         final_results.sort(key=lambda x: x.get('score', 0), reverse=True)
         
-        # Cache results (Minimize RAM usage by storing only needed fields)
         if redis_cache.is_ready() and final_results:
-            minimal_data = [
-                {'title': m['title'], 'year': m.get('year'), 'imdb_id': m['imdb_id'], 'score': m.get('score')} 
-                for m in final_results
-            ]
-            await redis_cache.set(cache_key, json.dumps(minimal_data), ttl=600)
+            await redis_cache.set(cache_key, json.dumps(final_results), ttl=600)
 
-    if not final_results:
-        return None, None
+    if not final_results: return None, None, None
 
-    # 3. Pagination Logic
+    # 2. Pagination
     total_results = len(final_results)
     start_idx = page * limit_per_page
     end_idx = start_idx + limit_per_page
     page_results = final_results[start_idx:end_idx]
 
-    if not page_results:
-        return "No more results.", None
+    if not page_results: return "No more results.", None, None
 
+    # 3. Build Premium Layout
     buttons = []
-    for movie in page_results:
-        display_title = movie["title"][:35] + '...' if len(movie["title"]) > 35 else movie["title"]
-        year_str = f" ({movie.get('year')})" if movie.get('year') else ""
+    poster_url = None
+    
+    # Header for Top Result (First page only)
+    if page == 0 and page_results:
+        top_movie = page_results[0]
+        poster_url = get_poster_url(top_movie['imdb_id'])
+        
+        # Top Result is the "Hero" - displayed in Caption
+        hero_title = top_movie['title']
+        hero_year = f"({top_movie['year']})" if top_movie.get('year') else ""
+        text = (
+            f"🎬 **TOP MATCH**\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"🍿 **{hero_title}** {hero_year}\n"
+            f"⭐️ **IMDb ID:** `{top_movie['imdb_id']}`\n\n"
+            f"👇 **Select Option Below:**"
+        )
+        
+        # Add "Download" button for the Hero Movie
+        if is_group:
+            url = f"https://t.me/{bot_username}?start=get_{top_movie['imdb_id']}"
+            buttons.append([InlineKeyboardButton(text="📥 Download Top Match", url=url)])
+        else:
+            # We assume the user wants the best quality, but we give a generic label
+            buttons.append([InlineKeyboardButton(text="📂 Get Movie Files", callback_data=f"get_{top_movie['imdb_id']}")])
+        
+        # Separator for other results
+        if len(page_results) > 1:
+            buttons.append([InlineKeyboardButton(text="🔻 — MORE RESULTS — 🔻", callback_data="ignore")])
+            
+        # Remove top movie from list so we don't duplicate it in the list below
+        remaining_results = page_results[1:]
+    else:
+        text = f"🔎 **Search Results** (Page {page+1})"
+        remaining_results = page_results
+
+    # List other results as compact buttons
+    for movie in remaining_results:
+        display = f"🎬 {movie['title']}"
+        if movie.get('year'): display += f" ({movie['year']})"
+        display = display[:60] # Truncate
         
         if is_group:
-            # Deep Linking for Group
             url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
-            buttons.append([InlineKeyboardButton(text=f"🎬 {display_title}{year_str}", url=url)])
+            buttons.append([InlineKeyboardButton(text=display, url=url)])
         else:
-            # Callback for Private Chat
-            buttons.append([InlineKeyboardButton(text=f"🎬 {display_title}{year_str}", callback_data=f"get_{movie['imdb_id']}")])
+            buttons.append([InlineKeyboardButton(text=display, callback_data=f"get_{movie['imdb_id']}")])
 
-    # Navigation Buttons
+    # Navigation
     nav_row = []
-    if page > 0:
-        nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
-    
-    if end_idx < total_results:
-        nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
-    
-    if nav_row:
-        buttons.append(nav_row)
+    if page > 0: nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
+    if end_idx < total_results: nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
+    if nav_row: buttons.append(nav_row)
 
-    total_pages = (total_results + limit_per_page - 1) // limit_per_page
-    text = f"🔎 **Results for:** `{'Stored Query' if page > 0 else query}`\n**Page:** {page+1}/{total_pages} | **Found:** {total_results}"
-    
-    return text, InlineKeyboardMarkup(inline_keyboard=buttons)
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
     
 
 # --- 1. PRIVATE CHAT SEARCH HANDLER ---
