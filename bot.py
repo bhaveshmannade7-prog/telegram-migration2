@@ -1869,47 +1869,47 @@ async def ignore_callback(callback: types.CallbackQuery):
     
 # --- 3. PAGINATION CALLBACK (NEW) ---
 @dp.callback_query(F.data.startswith("psearch:"))
+@dp.callback_query(F.data.startswith("psearch:"))
 async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cache: RedisCacheLayer):
-    # Data format: psearch:page_num:is_group
     try:
         _, page_str, is_grp_str = callback.data.split(":")
         page = int(page_str)
         is_group = bool(int(is_grp_str))
     except:
-        await callback.answer("❌ Error: Invalid Data")
+        await callback.answer("❌ Error: Bad Data")
         return
 
     user_id = callback.from_user.id
     bot_info = await bot.get_me()
     
-    # "ignored" pass kar rahe hain, kyunki actual query ab process_search_results khud Redis se uthayega
+    # "ignored" bhejne se process_search_results khud Redis se purani query utha lega
     text, markup, _ = await process_search_results("ignored", user_id, redis_cache, page=page, is_group=is_group, bot_username=bot_info.username)
 
     if text:
-        # Check for Session Expired Message
+        # Special handling for Expired Session
         if "Session Expired" in text:
-            await callback.answer("⌛ Session Expired. Please search again.", show_alert=True)
-            try: await callback.message.delete()
-            except: pass
+            await callback.answer("⚠️ Session Expired. Search again.", show_alert=True)
+            return
+
+        if "No More Results" in text:
+            await callback.answer("🚫 End of List", show_alert=True)
             return
 
         try:
-            # Edit Caption if photo exists, else Text
+            # Smart Edit: Photo caption or Text body
             if callback.message.photo:
-                # InputMediaPhoto use nahi kar rahe taaki flicker na ho, bas caption badlenge
                 await callback.message.edit_caption(caption=text, reply_markup=markup)
             else:
                 await callback.message.edit_text(text, reply_markup=markup)
         except Exception as e:
-            # Agar message same hai to Telegram error deta hai, usko ignore karein
+            # Ignore 'Message not modified' error
             if "message is not modified" not in str(e).lower():
                 await callback.answer("Updated.")
             else:
                 await callback.answer()
-
     else:
+        # Fallback
         await callback.answer("🚫 End of Results.", show_alert=True)
-
 @dp.callback_query(F.data.startswith("get_"))
 @handler_timeout(20)
 async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Database, db_fallback: Database, redis_cache: RedisCacheLayer):
