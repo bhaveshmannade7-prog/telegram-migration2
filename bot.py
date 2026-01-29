@@ -646,31 +646,31 @@ def get_quality_label(filename: str) -> str:
     return "🎬 Watch Now"
 def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    SMART BANNER ENGINE V10 (ACCURACY FIX)
-    1. Force-search using the DATABASE TITLE (Correct Spelling).
-    2. Use Quotes "" in Bing Query to prevent fuzzy image matching.
-    3. Return Full Size Image (No Crop).
+    SMART BANNER ENGINE V11 (ACCURACY FIXED)
+    1. Uses Clean DB Title.
+    2. Adds specific keywords to force movie/series posters.
     """
-    # Clean title but keep exact wording for search
-    search_title = title.replace(".", " ").replace("-", " ").strip()
-    
-    # Priority 1: Real IMDb ID -> OMDb (Vertical High-Res)
-    if imdb_id and imdb_id.startswith("tt"):
+    # Priority 1: Real IMDb ID -> OMDb (High-Res)
+    if imdb_id and imdb_id.startswith("tt") and imdb_id[2:].isdigit():
         omdb_key = "19f1d07c" # Free Key
         poster = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
-        # output=jpg: Lightweight, No Crop params used (Full Image)
         return f"https://wsrv.nl/?url={poster}&w=1000&output=jpg"
 
-    # Priority 2: Fallback -> Bing Search (For Auto IDs)
+    # Priority 2: Fallback -> Bing Search (Using CORRECT Title)
     import urllib.parse
     
-    # 🔥 TRICK: Quotes "" lagane se Bing EXACT title dhundega
-    # Query Example: movie poster "Pushpa 2" 2024
-    # 'site:imdb.com' hataya taaki zyada results milein, par quotes rakhe accuracy ke liye
-    query_str = f'movie poster "{search_title}" {year}'
+    # Cleaning title for Image Search (removing special chars for better hits)
+    search_title = re.sub(r"[^a-zA-Z0-9\s]", "", title).strip()
+    
+    # 🔥 TRICK: "Poster" keyword aur Year jodne se accuracy 100% badh jati hai
+    if year:
+        query_str = f'movie poster "{search_title}" {year} high resolution'
+    else:
+        query_str = f'movie poster "{search_title}" official high resolution'
+        
     safe_query = urllib.parse.quote(query_str.strip())
     
-    # Bing URL: rs=1 (Resize Scale - Full Image, No Crop)
+    # Bing URL: rs=1 ensures we don't get cropped thumbnails
     return f"https://tse2.mm.bing.net/th?q={safe_query}&w=1000&rs=1"
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
@@ -1586,46 +1586,62 @@ async def process_search_results(
     bot_username: str = ""
 ) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     """
-    PREMIUM ENGINE: Passes Correct Title to Poster Generator.
+    PREMIUM ENGINE V2: Fixed Pagination & Accurate Banners.
     """
-    limit_per_page = 5
+    limit_per_page = 7 # Increased slightly for better view
     cache_key = f"search_res:{user_id}"
     final_results = []
     
     # 1. Cache Fetch
     if redis_cache.is_ready():
         cached_data = await redis_cache.get(cache_key)
-        if cached_data and page > 0:
+        if cached_data:
             try: final_results = json.loads(cached_data)
             except: pass
     
-    # 2. Live Search
-    if not final_results:
-        if not fuzzy_movie_cache: return "⚠️ **System warming up...**", None, None
+    # 2. CRITICAL FIX: Session Restoration (For Pagination)
+    # Agar cache empty hai aur query "ignored" hai (matlab user ne Next page dabaya)
+    # To hum purani query wapas layenge.
+    if not final_results and query == "ignored":
+        if redis_cache.is_ready():
+            saved_query = await redis_cache.get(f"last_query:{user_id}")
+            if saved_query:
+                query = saved_query # Query Restore ho gayi!
+            else:
+                # Agar query mili hi nahi, to session expired
+                return "⌛ **Search Session Expired**\nSearch results cache se clear ho gaye hain. Kripya dobara search karein.", None, None
+
+    # 3. Live Search (Agar abhi bhi results nahi hain)
+    if not final_results and query != "ignored":
+        if not fuzzy_movie_cache: return "⚠️ **System warming up...** Try again in 10s.", None, None
         
         loop = asyncio.get_running_loop()
+        # V7 Search call
         fuzzy_hits_raw = await loop.run_in_executor(
             executor, 
             partial(python_fuzzy_search, cache_snapshot=fuzzy_movie_cache), 
             query, 100
         )
         
-        # Deduplicate
+        # Deduplicate Logic
         seen_imdb = set()
         for movie in fuzzy_hits_raw:
             if movie['imdb_id'] not in seen_imdb:
                 final_results.append(movie)
                 seen_imdb.add(movie['imdb_id'])
         
-        # Sort by Accuracy (Score)
+        # Sort by Score
         final_results.sort(key=lambda x: x.get('score', 0), reverse=True)
         
+        # Save to Redis (TTL 10 Min)
         if redis_cache.is_ready() and final_results:
             await redis_cache.set(cache_key, json.dumps(final_results), ttl=600)
+            # Query bhi save karein fallback ke liye
+            await redis_cache.set(f"last_query:{user_id}", query, ttl=600)
 
     if not final_results: return None, None, None
 
-    # 3. Pagination
+    # 4. Pagination Slicing
     total_results = len(final_results)
     start_idx = page * limit_per_page
     end_idx = start_idx + limit_per_page
@@ -1637,66 +1653,71 @@ async def process_search_results(
     buttons = []
     poster_url = None
     
-    # === HEADER: TOP RESULT ===
+    # === HEADER: TOP RESULT (Banner Generation) ===
     if page == 0:
         top_movie = page_results[0]
         
-        # 🔥 CRITICAL: Extract CORRECT Title from DB Result (Not User Query)
-        # Isse hi 100% accurate banner ayega
+        # 🔥 CRITICAL FIX: Use DB Title, NOT User Query
         t_id = top_movie.get('imdb_id', 'N/A')
         t_title = top_movie.get('title', 'Unknown') 
         t_year = top_movie.get('year') or ""
         
-        # Generate Poster using CORRECT Data
+        # Generate Poster using ACCURATE Data
         poster_url = get_poster_url(t_id, t_title, t_year)
 
-        # UI Text
         text = (
-            f"🎬 **TOP MATCH FOUND**\n"
-            f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+            f"🎬 **BEST MATCH FOUND**\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
             f"🍿 **{t_title}**\n"
             f"📅 Year: {t_year}   ⭐️ ID: `{t_id}`\n\n"
-            f"👇 **Download / Watch Below:**"
+            f"👇 **Select from below:**"
         )
         
-        # Highlighted Button
+        # Highlighted Top Button
+        label = f"📥 Get {t_title}"
         if is_group:
             link = f"https://t.me/{bot_username}?start=get_{t_id}"
-            buttons.append([InlineKeyboardButton(text="📥 Download Top Match Now", url=link)])
+            buttons.append([InlineKeyboardButton(text=label, url=link)])
         else:
-            buttons.append([InlineKeyboardButton(text="✨ Click to Download Top Match", callback_data=f"get_{t_id}")])
+            buttons.append([InlineKeyboardButton(text=label, callback_data=f"get_{t_id}")])
             
-        # Divider
+        # Divider for others
         if len(page_results) > 1:
-            buttons.append([InlineKeyboardButton(text="🔻 — MORE RESULTS BELOW — 🔻", callback_data="ignore")])
+            buttons.append([InlineKeyboardButton(text=f"🔻 — ALL RESULTS ({total_results}) — 🔻", callback_data="ignore")])
         
+        # Baaki list (Item 0 ko repeat nahi karenge list mein taaki clean lage)
         remaining_list = page_results[1:]
     else:
-        text = f"🔎 **Search Results** (Page {page+1})"
+        text = f"🔎 **Results Page {page+1}**"
         remaining_list = page_results
 
-    # === BODY ===
+    # === LIST GENERATION ===
     for movie in remaining_list:
-        display = f"🎬 {movie['title']}"
+        # UI Fix: Cleaner Button Text
+        display = f"{movie['title']}"
         if movie.get('year'): display += f" ({movie['year']})"
-        display = display[:60]
+        display = display[:60] # Limit length
         
         if is_group:
             url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
-            buttons.append([InlineKeyboardButton(text=display, url=url)])
+            buttons.append([InlineKeyboardButton(text=f"📂 {display}", url=url)])
         else:
-            buttons.append([InlineKeyboardButton(text=display, callback_data=f"get_{movie['imdb_id']}")])
+            buttons.append([InlineKeyboardButton(text=f"📂 {display}", callback_data=f"get_{movie['imdb_id']}")])
 
-    # === FOOTER ===
+    # === FOOTER NAVIGATION ===
     nav_row = []
     if page > 0: 
         nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
+    
+    # Page Indicator (Center Button - Non Clickable)
+    nav_row.append(InlineKeyboardButton(text=f"📄 {page+1}/{int(total_results/limit_per_page)+1}", callback_data="ignore"))
+
     if end_idx < total_results: 
-        nav_row.append(InlineKeyboardButton(text="Next Page ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
+        nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
     
     if nav_row: buttons.append(nav_row)
 
-    return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url  
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
 # --- 1. PRIVATE SEARCH (AUTO-DELETE: 4 MIN) ---
 @dp.message(
     StateFilter(None), 
@@ -1832,34 +1853,45 @@ async def ignore_callback(callback: types.CallbackQuery):
 # --- 3. PAGINATION CALLBACK (NEW) ---
 @dp.callback_query(F.data.startswith("psearch:"))
 async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cache: RedisCacheLayer):
-    # Data format: psearch:page_num:is_group (1 or 0)
+    # Data format: psearch:page_num:is_group
     try:
         _, page_str, is_grp_str = callback.data.split(":")
         page = int(page_str)
         is_group = bool(int(is_grp_str))
     except:
-        await callback.answer("Error")
+        await callback.answer("❌ Error: Invalid Data")
         return
 
     user_id = callback.from_user.id
     bot_info = await bot.get_me()
     
-    # Fetch results from Cache (Query is implied from cache)
-        # Fetch results (Unpack 3 values)
+    # "ignored" pass kar rahe hain, kyunki actual query ab process_search_results khud Redis se uthayega
     text, markup, _ = await process_search_results("ignored", user_id, redis_cache, page=page, is_group=is_group, bot_username=bot_info.username)
 
     if text:
+        # Check for Session Expired Message
+        if "Session Expired" in text:
+            await callback.answer("⌛ Session Expired. Please search again.", show_alert=True)
+            try: await callback.message.delete()
+            except: pass
+            return
+
         try:
-            # Support editing both Text and Caption
+            # Edit Caption if photo exists, else Text
             if callback.message.photo:
+                # InputMediaPhoto use nahi kar rahe taaki flicker na ho, bas caption badlenge
                 await callback.message.edit_caption(caption=text, reply_markup=markup)
             else:
                 await callback.message.edit_text(text, reply_markup=markup)
-        except Exception:
-            await callback.answer("Updated.")
+        except Exception as e:
+            # Agar message same hai to Telegram error deta hai, usko ignore karein
+            if "message is not modified" not in str(e).lower():
+                await callback.answer("Updated.")
+            else:
+                await callback.answer()
 
     else:
-        await callback.answer("Page expired. Search again.", show_alert=True)
+        await callback.answer("🚫 End of Results.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("get_"))
 @handler_timeout(20)
