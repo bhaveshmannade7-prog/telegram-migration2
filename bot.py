@@ -1710,7 +1710,7 @@ async def process_search_results(
 
     return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
       
-# --- 1. PRIVATE SEARCH (STRICT FALLBACK FLOW) ---
+# --- 1. PRIVATE SEARCH (AUTO-DELETE: 4 MIN) ---
 @dp.message(
     StateFilter(None), 
     F.text, 
@@ -1728,10 +1728,10 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
     if not await ensure_capacity_or_inform(message, db_primary, bot, redis_cache): return
     is_member = await check_user_membership(user.id, bot)
     if not is_member:
-        await message.answer("⛔️ **ACCESS DENIED**\nPlease join our channels first.", reply_markup=get_join_keyboard())
+        await message.answer("⛔️ **ACCESS DENIED**", reply_markup=get_join_keyboard())
         return
 
-    # B. Input & Feedback
+    # B. Input Processing
     query = clean_text_for_search(message.text)
     if len(query) < 2:
         await message.answer("⚠️ Query too short.")
@@ -1740,44 +1740,53 @@ async def search_movie_handler_private(message: types.Message, bot: Bot, db_prim
     wait_msg = await message.answer(f"🔎 Searching for '{query}'...")
     if redis_cache.is_ready(): await redis_cache.set(f"last_query:{user.id}", query, ttl=600)
 
-    # C. ENGINE CALL (Gets Text, Buttons, and Banner URL)
+    # C. ENGINE CALL
     text, markup, poster_url = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
     
+    # Helper for Auto-Delete (4 Minutes = 240s)
+    async def schedule_result_delete(msg_id):
+        await asyncio.sleep(240)
+        try: await bot.delete_message(chat_id=user.id, message_id=msg_id)
+        except: pass
+
     if not text:
         await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
         return
 
-    # D. DELIVERY FLOW (TRY PHOTO -> CATCH -> TEXT)
-    success = False
-    
+    # D. DELIVERY
+    final_msg = None
     if poster_url:
         try:
-            # Attempt 1: Send Photo
-            await bot.send_photo(
+            # Send Photo
+            final_msg = await bot.send_photo(
                 chat_id=message.chat.id,
                 photo=poster_url,
                 caption=text,
                 reply_markup=markup
             )
-            success = True
-            try: await wait_msg.delete() # Cleanup "Searching..."
+            # Delete "Searching..." immediately
+            try: await wait_msg.delete() 
             except: pass
         except Exception as e:
-            # Log error but DO NOT stop
-            logger.warning(f"Banner send failed (Private): {e}")
-            success = False
+            logger.warning(f"Banner failed: {e}")
     
-    # E. FALLBACK (If Photo failed OR No Poster)
-    if not success:
-        await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))      
+    # Fallback to text if photo failed
+    if not final_msg:
+        final_msg = await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
+
+    # E. SCHEDULE AUTO DELETE (4 MIN)
+    if final_msg:
+        asyncio.create_task(schedule_result_delete(final_msg.message_id))
+                
 # --- 2. GROUP SEARCH (STRICT FALLBACK FLOW) ---
+# --- 2. GROUP SEARCH (AUTO-DELETE: 3 MIN) ---
 @dp.message(
     F.text,
     ~F.text.startswith("/"),
     F.chat.type.in_({"group", "supergroup"})
 )
 async def search_movie_handler_group(message: types.Message, bot: Bot, db_primary: Database, redis_cache: RedisCacheLayer):
-    # A. Authorization & Checks
+    # A. Auth & Checks
     chat_id = str(message.chat.id)
     chat_user = message.chat.username.lower() if message.chat.username else ""
     is_auth = False
@@ -1787,21 +1796,20 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
             is_auth = True; break
     
     if not is_auth: return
-    
     user = message.from_user
     if not user or spam_guard.check_user(user.id)['status'] != 'ok': return
 
-    is_member = await check_user_membership(user.id, bot)
-    
-    async def auto_del(m_ids):
-        await asyncio.sleep(120)
+    # Helper: Auto Delete (3 Minutes = 180s)
+    async def auto_del(m_ids, delay=180):
+        await asyncio.sleep(delay)
         for m in m_ids:
             try: await bot.delete_message(message.chat.id, m)
             except: pass
 
+    is_member = await check_user_membership(user.id, bot)
     if not is_member:
         alert = await message.reply("⚠️ **Access Denied**: Join channels to search.", reply_markup=get_join_keyboard())
-        asyncio.create_task(auto_del([message.message_id, alert.message_id]))
+        asyncio.create_task(auto_del([message.message_id, alert.message_id], delay=30))
         return
 
     # B. Search Logic
@@ -1813,22 +1821,27 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
 
     if not text: return
 
-    # C. DELIVERY FLOW (TRY PHOTO -> CATCH -> TEXT)
+    # C. Delivery
     res_msg = None
-    
     if poster_url:
         try:
             res_msg = await message.reply_photo(photo=poster_url, caption=text, reply_markup=markup)
         except Exception:
-            res_msg = None # Mark as failed
+            res_msg = None
     
-    # D. FALLBACK (Immediate Text Reply)
     if not res_msg:
         res_msg = await message.reply(text, reply_markup=markup)
         
+    # D. SCHEDULE AUTO DELETE (Query + Result)
     if res_msg:
-        asyncio.create_task(auto_del([message.message_id, res_msg.message_id]))
+        asyncio.create_task(auto_del([message.message_id, res_msg.message_id], delay=180))
 
+# --- FIX: Handler for 'MORE RESULTS' button (Visual Separator) ---
+@dp.callback_query(F.data == "ignore")
+async def ignore_callback(callback: types.CallbackQuery):
+    # Bas answer kar do taaki loading circle band ho jaye
+    await callback.answer("⬇️ Check buttons below for more results")
+    
 # --- 3. PAGINATION CALLBACK (NEW) ---
 @dp.callback_query(F.data.startswith("psearch:"))
 async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cache: RedisCacheLayer):
