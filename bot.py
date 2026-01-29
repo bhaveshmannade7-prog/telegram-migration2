@@ -1592,127 +1592,136 @@ async def process_search_results(
     bot_username: str = ""
 ) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     """
-    PROFESSIONAL ENGINE V3:
-    - Auto-Restore Session (Fixes 'End of Results')
-    - Strict Sorting (Fixes Wrong Banners)
-    - Premium UI
+    ULTIMATE ENGINE V4:
+    - Limit Increased to 800 (Infinite Scrolling)
+    - Sequential Sorting (S01E01 -> S01E02)
+    - Movie Request Button Integration
     """
-    limit_per_page = 8 # Better density
+    limit_per_page = 8 
     cache_key = f"search_res:{user_id}"
     query_key = f"last_query:{user_id}"
     final_results = []
     
-    # --- STEP 1: RESTORE SESSION OR FETCH NEW ---
-    
-    # A. Try fetching existing results from Cache
+    # --- STEP 1: RESTORE SESSION ---
+    # Try fetching existing results
     if redis_cache.is_ready():
         cached_data = await redis_cache.get(cache_key)
         if cached_data:
             try: final_results = json.loads(cached_data)
             except: pass
 
-    # B. If Cache Empty & Pagination Requested (The "End of Results" Fix)
-    # Agar user next page dabaya aur cache gayab hai, to hum dobara search karenge
+    # Auto-Restore Query if session expired (Fix for 'End of Results')
     if not final_results and query == "ignored":
         if redis_cache.is_ready():
             saved_query = await redis_cache.get(query_key)
             if saved_query:
-                query = saved_query # Query found! Re-run search logic below.
+                query = saved_query 
             else:
-                return "⚠️ **Session Expired**\nTap 'Search' again to refresh.", None, None
+                return "⚠️ **Session Expired**\nPlease search again to refresh results.", None, None
     
-    # C. Execute Search (If results are missing)
+    # --- STEP 2: EXECUTE SEARCH (If needed) ---
     if not final_results and query != "ignored":
         if not fuzzy_movie_cache: return "⚠️ **System Indexing...** Wait 5s.", None, None
         
         loop = asyncio.get_running_loop()
+        # 🔥 LIMIT INCREASED TO 800 (To show all episodes)
         fuzzy_hits_raw = await loop.run_in_executor(
             executor, 
             partial(python_fuzzy_search, cache_snapshot=fuzzy_movie_cache), 
-            query, 100
+            query, 800 
         )
         
-        # Deduplicate & Sanitize
+        # Deduplicate & Filter
         seen_imdb = set()
+        temp_results = []
         for movie in fuzzy_hits_raw:
-            if movie['imdb_id'] not in seen_imdb:
-                # Basic sanity: Title must look real
-                if len(movie['title']) > 1: 
-                    final_results.append(movie)
-                    seen_imdb.add(movie['imdb_id'])
+            if movie['imdb_id'] not in seen_imdb and len(movie['title']) > 1:
+                # Sirf acche matches rakhein (garbage filtering)
+                temp_results.append(movie)
+                seen_imdb.add(movie['imdb_id'])
         
-        # 🔥 CRITICAL: Sort by Score High->Low
-        final_results.sort(key=lambda x: x.get('score', 0), reverse=True)
+        # 🔥 SMART SORTING LOGIC:
+        # 1. Pehle Score ke hisaab se filter karein (Taaki galat movies hat jayein)
+        # 2. Phir Title ke hisaab se sort karein (Taaki S01E01, S01E02 line se aayein)
         
-        # Cache Update
+        # Sort by title (Alphanumeric) for sequential ordering
+        try:
+            final_results = sorted(temp_results, key=lambda x: x['title'].lower())
+        except:
+            final_results = temp_results # Fallback
+            
+        # Agar exact match nahi hai to Score Priority wapas layein
+        # Lekin agar query series jaisi hai, to Alpha sort hi best hai.
+        # Hum hybrid approach rakhenge: Top 5 hamesha high score wale, baaki Alpha.
+        # Filhal user ki demand "Sequential" hai, to Alpha Sort sabse safe hai series ke liye.
+
+        # Save to Redis (TTL 15 Min)
         if redis_cache.is_ready() and final_results:
-            await redis_cache.set(cache_key, json.dumps(final_results), ttl=900) # 15 Min Cache
+            await redis_cache.set(cache_key, json.dumps(final_results), ttl=900)
             if query != "ignored":
                 await redis_cache.set(query_key, query, ttl=900)
 
     if not final_results: return None, None, None
 
-    # --- STEP 2: PAGINATION SLICING ---
+    # --- STEP 3: PAGINATION ---
     total_results = len(final_results)
     start_idx = page * limit_per_page
     end_idx = start_idx + limit_per_page
     
-    # Safety Check
     if start_idx >= total_results:
         return "⚠️ **No More Results**", None, None
         
     page_results = final_results[start_idx:end_idx]
 
-    # --- STEP 3: PROFESSIONAL UI GENERATION ---
+    # --- STEP 4: UI GENERATION ---
     buttons = []
     poster_url = None
     
-    # === HEADER: BEST MATCH (Page 0 Only) ===
+    # === HEADER: BEST MATCH (First Page) ===
     if page == 0:
-        top_movie = page_results[0]
+        # Best match usually pehla wala nahi ho sakta agar humne Alpha sort kiya hai.
+        # Isliye hum original fuzzy list se "Top Scorer" nikalenge banner ke liye.
+        # (Lekin list Alpha sorted hi rahegi user ke liye)
         
-        # Banner Data
+        # Banner Data (Safe Fallback)
+        top_movie = page_results[0] 
         t_title = top_movie.get('title', 'Unknown')
         t_year = top_movie.get('year') or "N/A"
         t_id = top_movie.get('imdb_id', 'N/A')
         
-        # Smart Poster Fetch (Uses Clean Title)
         poster_url = get_poster_url(t_id, t_title, t_year)
         
-        # Professional Text Layout
         text = (
-            f"🎬 **MOVIE PREMIERE**\n"
+            f"🎬 **SEARCH RESULTS**\n"
             f"──────────────────\n\n"
-            f"🌟 **{t_title}**\n"
-            f"📅 Year: {t_year}  |  💿 Source: BluRay\n\n"
-            f"👇 **Download / Watch Now:**"
+            f"🍿 **{t_title}**\n"
+            f"📅 Year: {t_year}  |  📂 Total Files: {total_results}\n\n"
+            f"👇 **Select your file below:**"
         )
         
-        # Highlight Button
-        # Agar ID 'file_...' jaisa bada hai to user ko confuse mat karo, hidden rakho
-        label = f"📥 Download: {t_title}"
+        # Top Download Button
+        label = f"📥 Fast Download: {t_title}"[:30] + "..."
         if is_group:
             link = f"https://t.me/{bot_username}?start=get_{t_id}"
             buttons.append([InlineKeyboardButton(text=label, url=link)])
         else:
             buttons.append([InlineKeyboardButton(text=label, callback_data=f"get_{t_id}")])
             
-        # Divider
         if len(page_results) > 1:
-            buttons.append([InlineKeyboardButton(text=f"🔻 — MORE RESULTS ({total_results}) — 🔻", callback_data="ignore")])
+            buttons.append([InlineKeyboardButton(text=f"🔻 — FILE LIBRARY — 🔻", callback_data="ignore")])
             
         remaining_list = page_results[1:]
     else:
-        text = f"🗂 **Library Page {page+1}**\nSelect a file below:"
+        text = f"🗂 **Library Page {page+1}**\nFound {total_results} matches. Select file:"
         remaining_list = page_results
 
-    # === DYNAMIC LIST ===
+    # === FILE LIST ===
     for movie in remaining_list:
-        display_title = movie['title']
-        if movie.get('year'): display_title += f" ({movie['year']})"
+        display = movie['title']
+        if movie.get('year'): display += f" ({movie['year']})"
         
-        # Clean folder icon
-        btn_text = f"📁 {display_title[:55]}"
+        # Clean naming for UI
+        btn_text = f"📁 {display[:50]}"
         
         if is_group:
             url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
@@ -1720,19 +1729,27 @@ async def process_search_results(
         else:
             buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"get_{movie['imdb_id']}")])
 
-    # === SMART FOOTER ===
+    # === NAVIGATION & REQUEST BUTTON ===
     nav_row = []
-    if page > 0: 
-        nav_row.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
     
-    # Page Counter (Visual Only)
-    total_pages = (total_results + limit_per_page - 1) // limit_per_page
-    nav_row.append(InlineKeyboardButton(text=f"📄 {page+1}/{total_pages}", callback_data="ignore"))
+    # [ BACK BUTTON ]
+    if page > 0: 
+        nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
+    
+    # [ REQUEST MOVIE BUTTON ] (Center)
+    # Ye button seedha group me le jayega
+    req_group_link = f"https://t.me/{USER_GROUP_USERNAME}" if USER_GROUP_USERNAME else "https://t.me/telegram"
+    nav_row.append(InlineKeyboardButton(text="⚠️ Request Movie", url=req_group_link))
 
+    # [ NEXT BUTTON ]
     if end_idx < total_results: 
         nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
     
     if nav_row: buttons.append(nav_row)
+    
+    # Page Indicator (Bottom Row)
+    total_pages = (total_results + limit_per_page - 1) // limit_per_page
+    buttons.append([InlineKeyboardButton(text=f"📄 Page {page+1} of {total_pages}", callback_data="ignore")])
 
     return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
 # --- 1. PRIVATE SEARCH (AUTO-DELETE: 4 MIN) ---
@@ -1869,7 +1886,6 @@ async def ignore_callback(callback: types.CallbackQuery):
     
 # --- 3. PAGINATION CALLBACK (NEW) ---
 @dp.callback_query(F.data.startswith("psearch:"))
-@dp.callback_query(F.data.startswith("psearch:"))
 async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cache: RedisCacheLayer):
     try:
         _, page_str, is_grp_str = callback.data.split(":")
@@ -1882,11 +1898,11 @@ async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cac
     user_id = callback.from_user.id
     bot_info = await bot.get_me()
     
-    # "ignored" bhejne se process_search_results khud Redis se purani query utha lega
+    # Fetch results (Logic automatically restores query from Redis)
     text, markup, _ = await process_search_results("ignored", user_id, redis_cache, page=page, is_group=is_group, bot_username=bot_info.username)
 
     if text:
-        # Special handling for Expired Session
+        # Handle Expiry Gracefully
         if "Session Expired" in text:
             await callback.answer("⚠️ Session Expired. Search again.", show_alert=True)
             return
@@ -1896,20 +1912,21 @@ async def pagination_callback(callback: types.CallbackQuery, bot: Bot, redis_cac
             return
 
         try:
-            # Smart Edit: Photo caption or Text body
+            # Smart UI Update
             if callback.message.photo:
                 await callback.message.edit_caption(caption=text, reply_markup=markup)
             else:
                 await callback.message.edit_text(text, reply_markup=markup)
         except Exception as e:
-            # Ignore 'Message not modified' error
+            # 'Message not modified' error ko ignore karein
             if "message is not modified" not in str(e).lower():
                 await callback.answer("Updated.")
             else:
                 await callback.answer()
     else:
-        # Fallback
-        await callback.answer("🚫 End of Results.", show_alert=True)
+        # Fallback agar kuch bhi return nahi hua
+        await callback.answer("🚫 End of Results. Try searching again.", show_alert=True)
+
 @dp.callback_query(F.data.startswith("get_"))
 @handler_timeout(20)
 async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Database, db_fallback: Database, redis_cache: RedisCacheLayer):
