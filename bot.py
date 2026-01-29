@@ -1815,16 +1815,18 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
         asyncio.create_task(delete_later([message.message_id, alert_msg.message_id], delay=30)) # 30s warning
         return
 
-    # D. Search
+        # D. Search
     query = clean_text_for_search(message.text)
     if len(query) < 2: return # Ignore short texts in groups (normal chat)
 
     bot_info = await bot.get_me()
-    text, markup = await process_search_results(query, user.id, redis_cache, page=0, is_group=True, bot_username=bot_info.username)
+    # FIXED: Unpack 3 values (poster ko '_' me daal kar ignore kar rahe hain group ke liye)
+    text, markup, _ = await process_search_results(query, user.id, redis_cache, page=0, is_group=True, bot_username=bot_info.username)
 
     if text:
         # Send Result
         res_msg = await message.reply(text, reply_markup=markup)
+
         # Schedule Delete (Query + Result)
         asyncio.create_task(delete_later([message.message_id, res_msg.message_id], delay=120)) # 2 Minutes
     else:
