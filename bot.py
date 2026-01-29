@@ -646,62 +646,32 @@ def get_quality_label(filename: str) -> str:
     return "🎬 Watch Now"
 def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    SMART BANNER ENGINE V9 (ACCURACY FIX)
+    SMART BANNER ENGINE V10 (ACCURACY FIX)
     1. Force-search using the DATABASE TITLE (Correct Spelling).
     2. Use Quotes "" in Bing Query to prevent fuzzy image matching.
     3. Return Full Size Image (No Crop).
     """
-    # Clean title but keep exact wording
+    # Clean title but keep exact wording for search
     search_title = title.replace(".", " ").replace("-", " ").strip()
     
     # Priority 1: Real IMDb ID -> OMDb (Vertical High-Res)
     if imdb_id and imdb_id.startswith("tt"):
-        omdb_key = "19f1d07c"
+        omdb_key = "19f1d07c" # Free Key
         poster = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
-        # w=1000: High quality, output=jpg: Lightweight
+        # output=jpg: Lightweight, No Crop params used (Full Image)
         return f"https://wsrv.nl/?url={poster}&w=1000&output=jpg"
 
     # Priority 2: Fallback -> Bing Search (For Auto IDs)
     import urllib.parse
     
     # 🔥 TRICK: Quotes "" lagane se Bing EXACT title dhundega
-    # Example Query: movie poster "Pushpa 2" 2024
+    # Query Example: movie poster "Pushpa 2" 2024
+    # 'site:imdb.com' hataya taaki zyada results milein, par quotes rakhe accuracy ke liye
     query_str = f'movie poster "{search_title}" {year}'
     safe_query = urllib.parse.quote(query_str.strip())
     
     # Bing URL: rs=1 (Resize Scale - Full Image, No Crop)
     return f"https://tse2.mm.bing.net/th?q={safe_query}&w=1000&rs=1"
-    # Priority 2: Fallback -> Bing Search (Horizontal/Vertical Mix)
-    import urllib.parse
-    # Query: Correct Title + Year + "movie poster"
-    query_str = f"{search_title} {year} movie poster high resolution"
-    safe_query = urllib.parse.quote(query_str.strip())
-    
-    # Bing URL: w=1000 (Max Width), rs=1 (Resize Scale - No Crop)
-    return f"https://tse2.mm.bing.net/th?q={safe_query}&w=1000&rs=1"
-    
-    # Option B: Fallback (Auto IDs ke liye) - Bing Image Search
-    import urllib.parse
-    # Title clean karein
-    clean_title = title.replace(".", " ").replace("-", " ").strip()
-    if not clean_title:
-        # Agar title khali hai to default banner
-        return "https://i.ibb.co/9pnt6qH/cinema-search-banner.jpg"
-        
-    search_query = f"{clean_title} {year} movie wide banner wallpaper".strip()
-    safe_query = urllib.parse.quote(search_query)
-    
-    # Bing se pehli image uthata hai (Free & Fast)
-    return f"https://tse2.mm.bing.net/th?q={safe_query}&w=400&h=200&c=7&rs=1"
-    
-    # Option B: Fallback (Auto IDs ke liye) - Bing Image Search
-    import urllib.parse
-    clean_title = title.replace(".", " ").replace("-", " ").strip()
-    search_query = f"{clean_title} {year} movie wide banner wallpaper".strip()
-    safe_query = urllib.parse.quote(search_query)
-    
-    # Bing se pehli image uthata hai (Free & Fast)
-    return f"https://tse2.mm.bing.net/th?q={safe_query}&w=400&h=200&c=7&rs=1"
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
     return (
@@ -1608,6 +1578,7 @@ async def banned_search_movie_handler_stub(message: types.Message): pass
 
 # --- REPLACEMENT CODE FOR SEARCH PROCESSING ---
 async def process_search_results(
+async def process_search_results(
     query: str, 
     user_id: int, 
     redis_cache: RedisCacheLayer, 
@@ -1690,7 +1661,6 @@ async def process_search_results(
         )
         
         # Highlighted Button
-        btn_text = f"📂 Get {t_title}"
         if is_group:
             link = f"https://t.me/{bot_username}?start=get_{t_id}"
             buttons.append([InlineKeyboardButton(text="📥 Download Top Match Now", url=link)])
@@ -1727,7 +1697,7 @@ async def process_search_results(
     
     if nav_row: buttons.append(nav_row)
 
-    return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url      
+    return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url  
 # --- 1. PRIVATE SEARCH (AUTO-DELETE: 4 MIN) ---
 @dp.message(
     StateFilter(None), 
