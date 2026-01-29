@@ -1815,17 +1815,30 @@ async def search_movie_handler_group(message: types.Message, bot: Bot, db_primar
         asyncio.create_task(delete_later([message.message_id, alert_msg.message_id], delay=30)) # 30s warning
         return
 
-        # D. Search
-    query = clean_text_for_search(message.text)
-    if len(query) < 2: return # Ignore short texts in groups (normal chat)
-
-    bot_info = await bot.get_me()
-    # FIXED: Unpack 3 values (poster ko '_' me daal kar ignore kar rahe hain group ke liye)
-    text, markup, _ = await process_search_results(query, user.id, redis_cache, page=0, is_group=True, bot_username=bot_info.username)
-
+            # D. Process Search with Premium Image Support
+    # FIX: Changed 'user_id' to 'user.id'
+    text, markup, poster = await process_search_results(query, user.id, redis_cache, page=0, is_group=False)
+    
     if text:
-        # Send Result
-        res_msg = await message.reply(text, reply_markup=markup)
+        if poster:
+            # Delete "Searching..." text and send Photo
+            try:
+                await wait_msg.delete()
+            except: pass
+            
+            await safe_tg_call(
+                bot.send_photo(
+                    chat_id=message.chat.id,
+                    photo=poster,
+                    caption=text,
+                    reply_markup=markup
+                )
+            )
+        else:
+            # Text-only fallback
+            await safe_tg_call(wait_msg.edit_text(text, reply_markup=markup))
+    else:
+        await safe_tg_call(wait_msg.edit_text(f"❌ No results found for **{query}**."))
 
         # Schedule Delete (Query + Result)
         asyncio.create_task(delete_later([message.message_id, res_msg.message_id], delay=120)) # 2 Minutes
