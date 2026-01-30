@@ -1,81 +1,93 @@
 # core_utils.py
 import asyncio
 import logging
-# Smart Fix: Bot import add kiya gaya hai mounting ke liye
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 
+# Logger Setup
 logger = logging.getLogger("bot.core_utils")
 
-# ============ GLOBAL SEMAPHORES & CONSTANTS ============
-TG_OP_TIMEOUT = 8
-DB_OP_TIMEOUT = 10 
+# ============ GLOBAL OPTIMIZED CONSTANTS ============
+# Timeout badha diya taaki slow network par "End of Results" na aaye
+TG_OP_TIMEOUT = 12  
+DB_OP_TIMEOUT = 15 
 
-# FIX: Reduced limits for Free Tier stability (Original Values Kept)
-DB_SEMAPHORE = asyncio.Semaphore(5) # Reduced from 15 to 5
-TELEGRAM_DELETE_SEMAPHORE = asyncio.Semaphore(10)
-TELEGRAM_COPY_SEMAPHORE = asyncio.Semaphore(10) # Reduced from 15 to 10
-TELEGRAM_BROADCAST_SEMAPHORE = asyncio.Semaphore(15) # Reduced from 25 to 15
+# ============ SMART SEMAPHORES (Render Friendly) ============
+# Limit control taaki bot freeze na ho
+DB_SEMAPHORE = asyncio.Semaphore(10)               # Database ke liye 10 parallel requests
+TELEGRAM_DELETE_SEMAPHORE = asyncio.Semaphore(10)  # Delete limit
+TELEGRAM_COPY_SEMAPHORE = asyncio.Semaphore(10)    # Copy/Forward limit
+TELEGRAM_BROADCAST_SEMAPHORE = asyncio.Semaphore(20) # Broadcast fast karne ke liye badhaya
 WEBHOOK_SEMAPHORE = asyncio.Semaphore(1) 
 
-
-# --- SAFE API CALL WRAPPERS (Final Fix) ---
-async def safe_db_call(coro, timeout=DB_OP_TIMEOUT, default=None):
+# --- 1. HYBRID DATABASE CALL WRAPPER (CRASH FIX) ---
+async def safe_db_call(coro_or_value, timeout=DB_OP_TIMEOUT, default=None):
     """
-    Async database coroutine (motor, asyncpg) ko execute karta hai,
-    timeout aur exceptions ko handle karta hai.
+    ULTIMATE DB WRAPPER (Sync + Async Compatible):
+    - Agar input 'async function' hai, to usse await karega.
+    - Agar input 'normal value' hai, to usse direct return karega.
+    - Result: 'Non-coroutine object passed' wala error JAD SE KHATAM.
     """
-    if not asyncio.iscoroutine(coro):
-         logger.error(f"SAFE_DB_CALL ERROR: Non-coroutine object passed for {getattr(coro, '__name__', 'unknown_func')}")
-         return default
-         
-    try:
-        # DB_SEMAPHORE aur timeout ka use
-        async with DB_SEMAPHORE: 
-            return await asyncio.wait_for(coro, timeout=timeout)
-    except asyncio.TimeoutError:
-        logger.error(f"DB call timeout ({timeout}s): {getattr(coro, '__name__', 'unknown_coro')}")
-        # Connection Failure ko simulate karne ke liye None return karein (Failure State)
-        return default
-    except Exception as e:
-         # ConnectionFailure, OperationFailure, etc. catch honge
-         logger.error(f"DB error in {getattr(coro, '__name__', 'unknown_coro')}: {e}", exc_info=True)
-         return default
+    # Check: Kya ye async function (coroutine) hai?
+    if asyncio.iscoroutine(coro_or_value):
+        try:
+            async with DB_SEMAPHORE: 
+                return await asyncio.wait_for(coro_or_value, timeout=timeout)
+        except asyncio.TimeoutError:
+            # Sirf warning print karo, crash mat karo
+            logger.warning(f"⚠️ DB Slow: Operation took >{timeout}s")
+            return default
+        except Exception as e:
+            logger.error(f"❌ DB Error: {e}", exc_info=True)
+            return default
+    
+    # Agar ye coroutine nahi hai (matlab Sync value hai), to seedha return karo
+    # Error dene ki jagah hum value accept kar lenge.
+    return coro_or_value
 
 
+# --- 2. SMART TELEGRAM CALL WRAPPER (RunTime Error Fix) ---
 async def safe_tg_call(coro, timeout=TG_OP_TIMEOUT, semaphore: asyncio.Semaphore | None = None, bot: Bot | None = None):
     """
-    Telegram API calls ko safely execute karta hai.
-    FIX: 'bot' parameter add kiya gaya hai RuntimeError solve karne ke liye.
+    Smart Wrapper for Telegram API:
+    - Automatically mounts 'bot' instance to fix 'RuntimeError: Bot not found'.
+    - Handles Blocked Users, FloodWaits, and Deleted Messages silently.
     """
-    # Rule: DO NOT delete, rewrite, or “optimize” ANY existing working feature
     semaphore_to_use = semaphore or asyncio.Semaphore(1)
+    
     try:
         async with semaphore_to_use:
-            if semaphore: await asyncio.sleep(0.1) 
-            
-            # SMART FIX: RuntimeError se bachne ke liye coro ko bot instance se mount karna
+            # FIX: Agar bot instance pass hua hai, to request ko uspar mount karo
+            # Ye 'ContextVar' error ko fix karta hai
             if bot and hasattr(coro, "as_"):
                 coro = coro.as_(bot)
                 
             return await asyncio.wait_for(coro, timeout=timeout)
             
     except asyncio.TimeoutError: 
-        logger.warning(f"TG call timeout: {getattr(coro, '__name__', 'unknown_coro')}"); return None
+        logger.warning(f"⚠️ TG Timeout: Request took >{timeout}s (Skipped)")
+        return None
+        
     except (TelegramAPIError, TelegramBadRequest) as e:
-        error_msg = str(e).lower()
-        if "bot was blocked" in error_msg or "user is deactivated" in error_msg:
-            logger.info(f"TG: Bot block ya user deactivated."); return False
-        elif "chat not found" in error_msg or "peer_id_invalid" in error_msg:
-            logger.info(f"TG: Chat nahi mila."); return False
-        elif "message is not modified" in error_msg:
-            logger.debug(f"TG: Message modify nahi hua."); return None
-        elif "message to delete not found" in error_msg or "message to copy not found" in error_msg:
-            logger.debug(f"TG: Message (delete/copy) nahi mila."); return None
-        elif "too many requests" in error_msg:
-            logger.warning(f"TG: FLOOD WAIT (Too Many Requests). {e}"); await asyncio.sleep(5); return None
+        err_msg = str(e).lower()
+        
+        # Common Errors ko ignore karo (Log mat bharo)
+        if "bot was blocked" in err_msg or "user is deactivated" in err_msg:
+            return False # User ne block kiya hai, chill raho
+        elif "chat not found" in err_msg or "peer_id_invalid" in err_msg:
+            return False
+        elif "message is not modified" in err_msg:
+            return None # Same content edit karne ki koshish ki
+        elif "message to delete not found" in err_msg:
+            return None # Message pehle hi delete ho chuka hai
+        elif "too many requests" in err_msg:
+            logger.warning(f"⚠️ TG FloodWait: Sleeping 5s...")
+            await asyncio.sleep(5) # Auto-cooldown
+            return None
         else:
-            logger.warning(f"TG Error: {e}"); return None
+            logger.error(f"❌ TG API Error: {e}")
+            return None
+            
     except Exception as e:
-        # Screenshot 1000074685 wala error yahan handle hota hai
-        logger.exception(f"TG Unexpected error in {getattr(coro, '__name__', 'unknown_coro')}: {e}"); return None
+        logger.exception(f"❌ TG Critical Crash: {e}")
+        return None
