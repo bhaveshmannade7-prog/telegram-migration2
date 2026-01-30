@@ -1599,7 +1599,7 @@ async def banned_search_movie_handler_stub(message: types.Message): pass
 # +++++ NEW: ADVANCED SEARCH HANDLERS (Private & Group) +++++
 # ==================================================
 
-# --- REPLACEMENT CODE FOR SEARCH PROCESSING (FIXED CACHE LOGIC) ---
+# --- REPLACEMENT CODE FOR SEARCH PROCESSING (CACHE OVERWRITE FIX) ---
 async def process_search_results(
     query: str, 
     user_id: int, 
@@ -1609,62 +1609,57 @@ async def process_search_results(
     bot_username: str = ""
 ) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     """
-    ULTIMATE ENGINE V7 (CACHE PRIORITY FIX):
-    - FIX: Distinguishes between 'New Search' and 'Next Page'.
-    - New Search -> Ignores Cache, Forces Fresh Search.
-    - Next Page -> Loads Cache.
+    ULTIMATE ENGINE V8 (CACHE FIX + V16 BANNER):
+    - Fix: Forces NEW search when user types text (Bypasses old cache).
+    - Fix: Uses Cache ONLY for Pagination (Next/Back buttons).
+    - Features: V7 Smart Scoring, V16 Studio Banner, Redis + RAM Fallback.
     """
     limit_per_page = 8 
     cache_key = f"search_res:{user_id}"
     query_key = f"last_query:{user_id}"
     final_results = []
     
-    # --- STEP 1: DECIDE SOURCE (RAM/Redis vs New Search) ---
+    # --- STEP 1: SMART SESSION HANDLING ---
     
-    # CRITICAL FIX: Cache sirf tab load karo jab query "ignored" ho (Yaani Next Page dabaya ho)
-    # Agar query me koi naam hai (Jaise "Avatar"), to Cache mat uthao!
-    
+    # CASE A: PAGINATION REQUEST (Next/Back Button)
+    # Jab user button dabata hai, query "ignored" hoti hai.
+    # Sirf tabhi hum Cache (Redis/RAM) load karenge.
     if query == "ignored":
-        # A. Try Redis First
+        # 1. Try Redis
         if redis_cache.is_ready():
             cached_data = await redis_cache.get(cache_key)
             if cached_data:
                 try: final_results = json.loads(cached_data)
                 except: pass
-                
-        # B. If Redis Failed, Try Local RAM
+        
+        # 2. Try Local RAM (Fallback)
         if not final_results:
             if user_id in LOCAL_SEARCH_CACHE:
                 saved_data = LOCAL_SEARCH_CACHE[user_id]
-                # 15 Min Expiry
+                # 15 Minute Expiry Check
                 if (datetime.now().timestamp() - saved_data['time']) < 900:
                     final_results = saved_data['results']
+        
+        # 3. Auto-Restore Query (For UI)
+        if redis_cache.is_ready():
+            saved_query = await redis_cache.get(query_key)
+            if saved_query: query = saved_query
+        elif user_id in LOCAL_SEARCH_CACHE:
+            query = LOCAL_SEARCH_CACHE[user_id].get('query', 'Unknown')
 
-        # C. Auto-Restore Query if session expired
-        if not final_results:
-            # Try getting last query to re-run search
-            saved_query = None
-            if redis_cache.is_ready():
-                saved_query = await redis_cache.get(query_key)
-            elif user_id in LOCAL_SEARCH_CACHE:
-                saved_query = LOCAL_SEARCH_CACHE[user_id].get('query')
-                
-            if saved_query:
-                query = saved_query # Purani query wapas mil gayi, ab niche search run hoga
-            else:
-                return "⚠️ **Session Expired**\nPlease search again to refresh results.", None, None
+    # CASE B: NEW SEARCH REQUEST (User typed text)
+    # Agar query "ignored" nahi hai, iska matlab user ne nayi movie mangi hai.
+    # Yaha hum Cache load NAHI karenge, taaki purana "Lokah" result na aye.
+    else:
+        final_results = [] # Force empty list to trigger new search
     
-    # --- STEP 2: EXECUTE SEARCH (If New Search OR Cache Empty) ---
-    
-    # Ye block tab chalega jab:
-    # 1. User ne nayi movie likhi hai (query != "ignored")
-    # 2. Ya fir Cache expire ho gaya tha aur humne query recover kar li
-    
+    # --- STEP 2: EXECUTE FRESH SEARCH (If needed) ---
     if not final_results and query != "ignored":
         if not fuzzy_movie_cache: return "⚠️ **System Indexing...** Wait 5s.", None, None
         
         loop = asyncio.get_running_loop()
-        # 🔥 SEARCH LIMIT 800
+        
+        # 🔥 V7 ENGINE: Search Logic
         fuzzy_hits_raw = await loop.run_in_executor(
             executor, 
             partial(python_fuzzy_search, cache_snapshot=fuzzy_movie_cache), 
@@ -1678,51 +1673,51 @@ async def process_search_results(
                 temp_results.append(movie)
                 seen_imdb.add(movie['imdb_id'])
         
-        # Sort by Score
+        # 🔥 V7 SORTING: Score High -> Low
         try:
             final_results = sorted(temp_results, key=lambda x: x.get('score', 0), reverse=True)
         except:
             final_results = temp_results
 
-        # --- SAVE RESULTS (Redis & RAM) ---
+        # --- SAVE NEW RESULTS (Overwrite Old Cache) ---
         if final_results:
             # 1. Save to Redis
             if redis_cache.is_ready():
                 await redis_cache.set(cache_key, json.dumps(final_results), ttl=900)
-                if query != "ignored":
-                    await redis_cache.set(query_key, query, ttl=900)
+                await redis_cache.set(query_key, query, ttl=900)
             
-            # 2. Save to Local RAM (Backup)
+            # 2. Save to RAM
             LOCAL_SEARCH_CACHE[user_id] = {
                 'results': final_results,
-                'query': query if query != "ignored" else LOCAL_SEARCH_CACHE.get(user_id, {}).get('query'),
+                'query': query,
                 'time': datetime.now().timestamp()
             }
 
     if not final_results: return None, None, None
 
-    # --- STEP 3: PAGINATION ---
+    # --- STEP 3: PAGINATION LOGIC ---
     total_results = len(final_results)
     start_idx = page * limit_per_page
     end_idx = start_idx + limit_per_page
     
+    # Fix: End of list protection
     if start_idx >= total_results and page > 0:
         return "⚠️ **End of List reached.**", None, None
         
     page_results = final_results[start_idx:end_idx]
 
-    # --- STEP 4: UI GENERATION ---
+    # --- STEP 4: UI GENERATION (V16 STYLE) ---
     buttons = []
     poster_url = None
     
-    # === HEADER & BANNER (First Page Only) ===
+    # === HEADER: BEST MATCH BANNER ===
     if page == 0:
         top_movie = page_results[0] 
         t_title = top_movie.get('title', 'Unknown')
         t_year = top_movie.get('year') or "N/A"
         t_id = top_movie.get('imdb_id', 'N/A')
         
-        # V16 Banner Call
+        # 🔥 CALLING V16 BANNER ENGINE
         poster_url = get_poster_url(t_id, t_title, t_year)
         
         text = (
@@ -1748,11 +1743,12 @@ async def process_search_results(
         text = f"🗂 **Library Page {page+1}**\nFound {total_results} matches. Select file:"
         remaining_list = page_results
 
-    # === FILE BUTTONS ===
+    # === FILE LIST BUTTONS ===
     for movie in remaining_list:
         display = movie['title']
         if movie.get('year'): display += f" ({movie['year']})"
         
+        # Smart Icons
         icon = "📁"
         score = movie.get('score', 0)
         if score >= 900: icon = "🌟"
@@ -1766,7 +1762,7 @@ async def process_search_results(
         else:
             buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"get_{movie['imdb_id']}")])
 
-    # === NAVIGATION ===
+    # === NAVIGATION & REQUEST BUTTON ===
     nav_row = []
     
     if page > 0: 
@@ -1784,7 +1780,7 @@ async def process_search_results(
     buttons.append([InlineKeyboardButton(text=f"📄 Page {page+1} of {total_pages}", callback_data="ignore")])
 
     return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
-
+       
 # --- 1. PRIVATE SEARCH (AUTO-DELETE: 4 MIN) ---
 @dp.message(
     StateFilter(None), 
