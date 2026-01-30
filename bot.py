@@ -1599,7 +1599,7 @@ async def banned_search_movie_handler_stub(message: types.Message): pass
 # +++++ NEW: ADVANCED SEARCH HANDLERS (Private & Group) +++++
 # ==================================================
 
-# --- REPLACEMENT CODE FOR SEARCH PROCESSING ---
+# --- REPLACEMENT CODE FOR SEARCH PROCESSING (FIXED CACHE LOGIC) ---
 async def process_search_results(
     query: str, 
     user_id: int, 
@@ -1609,96 +1609,120 @@ async def process_search_results(
     bot_username: str = ""
 ) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     """
-    ULTIMATE ENGINE V5 (Merged Fix):
-    - Accuracy: Restored V7 Smart Score Sorting (Old Bot Logic)
-    - UI: New Bot Style (Banner + Request Button)
-    - Fix: Pagination 'End of List' bug resolved via Auto-Refresh.
+    ULTIMATE ENGINE V7 (CACHE PRIORITY FIX):
+    - FIX: Distinguishes between 'New Search' and 'Next Page'.
+    - New Search -> Ignores Cache, Forces Fresh Search.
+    - Next Page -> Loads Cache.
     """
     limit_per_page = 8 
     cache_key = f"search_res:{user_id}"
     query_key = f"last_query:{user_id}"
     final_results = []
     
-    # --- STEP 1: RESTORE SESSION ---
-    # Try fetching existing results
-    if redis_cache.is_ready():
-        cached_data = await redis_cache.get(cache_key)
-        if cached_data:
-            try: final_results = json.loads(cached_data)
-            except: pass
-
-    # Auto-Restore Query if session expired (Fix for 'End of Results')
-    if not final_results and query == "ignored":
+    # --- STEP 1: DECIDE SOURCE (RAM/Redis vs New Search) ---
+    
+    # CRITICAL FIX: Cache sirf tab load karo jab query "ignored" ho (Yaani Next Page dabaya ho)
+    # Agar query me koi naam hai (Jaise "Avatar"), to Cache mat uthao!
+    
+    if query == "ignored":
+        # A. Try Redis First
         if redis_cache.is_ready():
-            saved_query = await redis_cache.get(query_key)
+            cached_data = await redis_cache.get(cache_key)
+            if cached_data:
+                try: final_results = json.loads(cached_data)
+                except: pass
+                
+        # B. If Redis Failed, Try Local RAM
+        if not final_results:
+            if user_id in LOCAL_SEARCH_CACHE:
+                saved_data = LOCAL_SEARCH_CACHE[user_id]
+                # 15 Min Expiry
+                if (datetime.now().timestamp() - saved_data['time']) < 900:
+                    final_results = saved_data['results']
+
+        # C. Auto-Restore Query if session expired
+        if not final_results:
+            # Try getting last query to re-run search
+            saved_query = None
+            if redis_cache.is_ready():
+                saved_query = await redis_cache.get(query_key)
+            elif user_id in LOCAL_SEARCH_CACHE:
+                saved_query = LOCAL_SEARCH_CACHE[user_id].get('query')
+                
             if saved_query:
-                query = saved_query 
+                query = saved_query # Purani query wapas mil gayi, ab niche search run hoga
             else:
                 return "⚠️ **Session Expired**\nPlease search again to refresh results.", None, None
     
-    # --- STEP 2: EXECUTE SEARCH (If needed) ---
+    # --- STEP 2: EXECUTE SEARCH (If New Search OR Cache Empty) ---
+    
+    # Ye block tab chalega jab:
+    # 1. User ne nayi movie likhi hai (query != "ignored")
+    # 2. Ya fir Cache expire ho gaya tha aur humne query recover kar li
+    
     if not final_results and query != "ignored":
         if not fuzzy_movie_cache: return "⚠️ **System Indexing...** Wait 5s.", None, None
         
         loop = asyncio.get_running_loop()
-        # 🔥 LIMIT INCREASED TO 800 (To show all episodes)
-        # Use existing 'python_fuzzy_search' which uses the V7 Intent Engine
+        # 🔥 SEARCH LIMIT 800
         fuzzy_hits_raw = await loop.run_in_executor(
             executor, 
             partial(python_fuzzy_search, cache_snapshot=fuzzy_movie_cache), 
             query, 800 
         )
         
-        # Deduplicate & Filter
         seen_imdb = set()
         temp_results = []
         for movie in fuzzy_hits_raw:
             if movie['imdb_id'] not in seen_imdb and len(movie['title']) > 1:
-                # Sirf acche matches rakhein (garbage filtering)
                 temp_results.append(movie)
                 seen_imdb.add(movie['imdb_id'])
         
-        # 🔥 RESTORED OLD BOT ACCURACY LOGIC:
-        # User Feedback: New bot was less accurate due to Alphabetical sort.
-        # Fix: Reverting to Score-based sorting (Highest Match First).
+        # Sort by Score
         try:
-            # Sort by Score Descending (Highest relevance first)
             final_results = sorted(temp_results, key=lambda x: x.get('score', 0), reverse=True)
         except:
-            final_results = temp_results # Fallback
+            final_results = temp_results
 
-        # Save to Redis (TTL 15 Min)
-        if redis_cache.is_ready() and final_results:
-            await redis_cache.set(cache_key, json.dumps(final_results), ttl=900)
-            if query != "ignored":
-                await redis_cache.set(query_key, query, ttl=900)
+        # --- SAVE RESULTS (Redis & RAM) ---
+        if final_results:
+            # 1. Save to Redis
+            if redis_cache.is_ready():
+                await redis_cache.set(cache_key, json.dumps(final_results), ttl=900)
+                if query != "ignored":
+                    await redis_cache.set(query_key, query, ttl=900)
+            
+            # 2. Save to Local RAM (Backup)
+            LOCAL_SEARCH_CACHE[user_id] = {
+                'results': final_results,
+                'query': query if query != "ignored" else LOCAL_SEARCH_CACHE.get(user_id, {}).get('query'),
+                'time': datetime.now().timestamp()
+            }
 
     if not final_results: return None, None, None
 
-    # --- STEP 3: PAGINATION FIX ---
+    # --- STEP 3: PAGINATION ---
     total_results = len(final_results)
     start_idx = page * limit_per_page
     end_idx = start_idx + limit_per_page
     
-    # Bug Fix: If page is out of range, don't show error, just show last page or reset
     if start_idx >= total_results and page > 0:
-        # Try to reset to page 0 if something messed up, or return safe error
         return "⚠️ **End of List reached.**", None, None
         
     page_results = final_results[start_idx:end_idx]
 
-    # --- STEP 4: UI GENERATION (New Bot Style) ---
+    # --- STEP 4: UI GENERATION ---
     buttons = []
     poster_url = None
     
-    # === HEADER: BEST MATCH (First Page Only) ===
+    # === HEADER & BANNER (First Page Only) ===
     if page == 0:
-        # Get the highest scoring movie for the banner
         top_movie = page_results[0] 
         t_title = top_movie.get('title', 'Unknown')
         t_year = top_movie.get('year') or "N/A"
         t_id = top_movie.get('imdb_id', 'N/A')
         
+        # V16 Banner Call
         poster_url = get_poster_url(t_id, t_title, t_year)
         
         text = (
@@ -1709,7 +1733,6 @@ async def process_search_results(
             f"👇 **Select your file below:**"
         )
         
-        # Top Download Button
         label = f"📥 Fast Download: {t_title}"[:30] + "..."
         if is_group:
             link = f"https://t.me/{bot_username}?start=get_{t_id}"
@@ -1725,16 +1748,15 @@ async def process_search_results(
         text = f"🗂 **Library Page {page+1}**\nFound {total_results} matches. Select file:"
         remaining_list = page_results
 
-    # === FILE LIST BUTTONS ===
+    # === FILE BUTTONS ===
     for movie in remaining_list:
         display = movie['title']
         if movie.get('year'): display += f" ({movie['year']})"
         
-        # Add Icon based on Match Type (From Old Bot Logic)
         icon = "📁"
         score = movie.get('score', 0)
-        if score >= 900: icon = "🌟" # Super match
-        elif score >= 500: icon = "⚡" # Good match
+        if score >= 900: icon = "🌟"
+        elif score >= 500: icon = "⚡"
         
         btn_text = f"{icon} {display[:50]}"
         
@@ -1744,26 +1766,20 @@ async def process_search_results(
         else:
             buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"get_{movie['imdb_id']}")])
 
-    # === NAVIGATION & REQUEST BUTTON ===
+    # === NAVIGATION ===
     nav_row = []
     
-    # [ BACK BUTTON ]
     if page > 0: 
         nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
     
-    # [ REQUEST MOVIE BUTTON ] (Center)
-    # Ye button seedha group me le jayega
     req_group_link = f"https://t.me/{USER_GROUP_USERNAME}" if USER_GROUP_USERNAME else "https://t.me/telegram"
     nav_row.append(InlineKeyboardButton(text="⚠️ Request Movie", url=req_group_link))
 
-    # [ NEXT BUTTON ]
-    # Fix: Only show Next if there are actually more items
     if end_idx < total_results: 
         nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
     
     if nav_row: buttons.append(nav_row)
     
-    # Page Indicator (Bottom Row)
     total_pages = (total_results + limit_per_page - 1) // limit_per_page
     buttons.append([InlineKeyboardButton(text=f"📄 Page {page+1} of {total_pages}", callback_data="ignore")])
 
