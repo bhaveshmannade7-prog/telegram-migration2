@@ -26,6 +26,10 @@ DB_SEMAPHORE = asyncio.Semaphore(500)
 TELEGRAM_DELETE_SEMAPHORE = asyncio.Semaphore(30)
 TELEGRAM_COPY_SEMAPHORE = asyncio.Semaphore(30)
 TELEGRAM_BROADCAST_SEMAPHORE = asyncio.Semaphore(40)
+
+# FIX: Missing Variable Added Back
+WEBHOOK_SEMAPHORE = asyncio.Semaphore(5) 
+
 DEFAULT_TG_SEMAPHORE = asyncio.Semaphore(100) # General messages
 
 # ============ HELPER FUNCTIONS ============
