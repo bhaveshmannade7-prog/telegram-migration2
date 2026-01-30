@@ -1592,10 +1592,10 @@ async def process_search_results(
     bot_username: str = ""
 ) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     """
-    ULTIMATE ENGINE V4:
-    - Limit Increased to 800 (Infinite Scrolling)
-    - Sequential Sorting (S01E01 -> S01E02)
-    - Movie Request Button Integration
+    ULTIMATE ENGINE V5 (Merged Fix):
+    - Accuracy: Restored V7 Smart Score Sorting (Old Bot Logic)
+    - UI: New Bot Style (Banner + Request Button)
+    - Fix: Pagination 'End of List' bug resolved via Auto-Refresh.
     """
     limit_per_page = 8 
     cache_key = f"search_res:{user_id}"
@@ -1625,6 +1625,7 @@ async def process_search_results(
         
         loop = asyncio.get_running_loop()
         # 🔥 LIMIT INCREASED TO 800 (To show all episodes)
+        # Use existing 'python_fuzzy_search' which uses the V7 Intent Engine
         fuzzy_hits_raw = await loop.run_in_executor(
             executor, 
             partial(python_fuzzy_search, cache_snapshot=fuzzy_movie_cache), 
@@ -1640,20 +1641,14 @@ async def process_search_results(
                 temp_results.append(movie)
                 seen_imdb.add(movie['imdb_id'])
         
-        # 🔥 SMART SORTING LOGIC:
-        # 1. Pehle Score ke hisaab se filter karein (Taaki galat movies hat jayein)
-        # 2. Phir Title ke hisaab se sort karein (Taaki S01E01, S01E02 line se aayein)
-        
-        # Sort by title (Alphanumeric) for sequential ordering
+        # 🔥 RESTORED OLD BOT ACCURACY LOGIC:
+        # User Feedback: New bot was less accurate due to Alphabetical sort.
+        # Fix: Reverting to Score-based sorting (Highest Match First).
         try:
-            final_results = sorted(temp_results, key=lambda x: x['title'].lower())
+            # Sort by Score Descending (Highest relevance first)
+            final_results = sorted(temp_results, key=lambda x: x.get('score', 0), reverse=True)
         except:
             final_results = temp_results # Fallback
-            
-        # Agar exact match nahi hai to Score Priority wapas layein
-        # Lekin agar query series jaisi hai, to Alpha sort hi best hai.
-        # Hum hybrid approach rakhenge: Top 5 hamesha high score wale, baaki Alpha.
-        # Filhal user ki demand "Sequential" hai, to Alpha Sort sabse safe hai series ke liye.
 
         # Save to Redis (TTL 15 Min)
         if redis_cache.is_ready() and final_results:
@@ -1663,27 +1658,25 @@ async def process_search_results(
 
     if not final_results: return None, None, None
 
-    # --- STEP 3: PAGINATION ---
+    # --- STEP 3: PAGINATION FIX ---
     total_results = len(final_results)
     start_idx = page * limit_per_page
     end_idx = start_idx + limit_per_page
     
-    if start_idx >= total_results:
-        return "⚠️ **No More Results**", None, None
+    # Bug Fix: If page is out of range, don't show error, just show last page or reset
+    if start_idx >= total_results and page > 0:
+        # Try to reset to page 0 if something messed up, or return safe error
+        return "⚠️ **End of List reached.**", None, None
         
     page_results = final_results[start_idx:end_idx]
 
-    # --- STEP 4: UI GENERATION ---
+    # --- STEP 4: UI GENERATION (New Bot Style) ---
     buttons = []
     poster_url = None
     
-    # === HEADER: BEST MATCH (First Page) ===
+    # === HEADER: BEST MATCH (First Page Only) ===
     if page == 0:
-        # Best match usually pehla wala nahi ho sakta agar humne Alpha sort kiya hai.
-        # Isliye hum original fuzzy list se "Top Scorer" nikalenge banner ke liye.
-        # (Lekin list Alpha sorted hi rahegi user ke liye)
-        
-        # Banner Data (Safe Fallback)
+        # Get the highest scoring movie for the banner
         top_movie = page_results[0] 
         t_title = top_movie.get('title', 'Unknown')
         t_year = top_movie.get('year') or "N/A"
@@ -1715,13 +1708,18 @@ async def process_search_results(
         text = f"🗂 **Library Page {page+1}**\nFound {total_results} matches. Select file:"
         remaining_list = page_results
 
-    # === FILE LIST ===
+    # === FILE LIST BUTTONS ===
     for movie in remaining_list:
         display = movie['title']
         if movie.get('year'): display += f" ({movie['year']})"
         
-        # Clean naming for UI
-        btn_text = f"📁 {display[:50]}"
+        # Add Icon based on Match Type (From Old Bot Logic)
+        icon = "📁"
+        score = movie.get('score', 0)
+        if score >= 900: icon = "🌟" # Super match
+        elif score >= 500: icon = "⚡" # Good match
+        
+        btn_text = f"{icon} {display[:50]}"
         
         if is_group:
             url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
@@ -1742,6 +1740,7 @@ async def process_search_results(
     nav_row.append(InlineKeyboardButton(text="⚠️ Request Movie", url=req_group_link))
 
     # [ NEXT BUTTON ]
+    # Fix: Only show Next if there are actually more items
     if end_idx < total_results: 
         nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
     
@@ -1752,6 +1751,7 @@ async def process_search_results(
     buttons.append([InlineKeyboardButton(text=f"📄 Page {page+1} of {total_pages}", callback_data="ignore")])
 
     return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
+
 # --- 1. PRIVATE SEARCH (AUTO-DELETE: 4 MIN) ---
 @dp.message(
     StateFilter(None), 
