@@ -2406,125 +2406,91 @@ async def admin_stats_callback(callback: types.CallbackQuery, db_primary: Databa
 
 async def generate_admin_dashboard(db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
     """
-    ULTIMATE DASHBOARD V5
-    - Safe HTML Structure
-    - Added Uptime & Network Stats
-    - Visual Progress Bars
+    Generates the text and markup for the admin dashboard.
+    Fetches: User counts, Movie counts, System Health, Monetization Status, Ads Stats.
     """
-    import psutil
-    import time
+    # 1. Database Health & Counts
+    user_count_task = safe_db_call(db_primary.get_user_count(), default=0)
+    mongo_1_count_task = safe_db_call(db_primary.get_movie_count(), default=0)
+    mongo_2_count_task = safe_db_call(db_fallback.get_movie_count(), default=0)
+    neon_count_task = safe_db_call(db_neon.get_movie_count(), default=0)
+    concurrent_users_task = safe_db_call(db_primary.get_concurrent_user_count(ACTIVE_WINDOW_MINUTES), default=0)
     
-    start_time = time.time()
-
-    # --- 1. SAFE METRICS GATHERING ---
-    try:
-        # CPU (Interval 0 for instant non-blocking)
-        cpu_usage = psutil.cpu_percent(interval=0.1)
-        
-        # RAM
-        ram = psutil.virtual_memory()
-        ram_usage = ram.percent
-        ram_used = round(ram.used / (1024**3), 2)
-        ram_total = round(ram.total / (1024**3), 2)
-        
-        # DISK
-        disk = psutil.disk_usage('/')
-        disk_usage = disk.percent
-        
-        # NETWORK (Total Traffic since boot)
-        net = psutil.net_io_counters()
-        sent_gb = round(net.bytes_sent / (1024**3), 2)
-        recv_gb = round(net.bytes_recv / (1024**3), 2)
-        
-        # BOOT TIME / UPTIME
-        boot_time = datetime.fromtimestamp(psutil.boot_time())
-        uptime_delta = datetime.now() - boot_time
-        uptime_str = str(uptime_delta).split('.')[0] # Remove microseconds
-        
-    except Exception as e:
-        logger.warning(f"Metrics error: {e}")
-        cpu_usage, ram_usage, ram_used, ram_total, disk_usage = 0, 0, 0, 0, 0
-        sent_gb, recv_gb, uptime_str = 0, 0, "N/A"
-
-    # --- 2. DB & APP METRICS (Async) ---
-    tasks = [
-        safe_db_call(db_primary.get_user_count(), default=0),          
-        safe_db_call(db_primary.get_movie_count(), default=0),         
-        safe_db_call(db_fallback.get_movie_count(), default=0),        
-        safe_db_call(db_neon.get_movie_count(), default=0),            
-        safe_db_call(db_primary.get_concurrent_user_count(ACTIVE_WINDOW_MINUTES), default=0), 
-        safe_db_call(db_primary.is_ready(), default=False),            
-        safe_db_call(db_fallback.is_ready(), default=False),           
-        safe_db_call(db_neon.is_ready(), default=False),               
-        safe_db_call(db_primary.get_config("shortlink_enabled", False), default=False), 
-        safe_db_call(db_primary.ads.count_documents({}), default=0)    
-    ]
+    # 2. Connection Checks
+    mongo_1_ready_task = safe_db_call(db_primary.is_ready(), default=False)
+    mongo_2_ready_task = safe_db_call(db_fallback.is_ready(), default=False)
+    neon_ready_task = safe_db_call(db_neon.is_ready(), default=False)
     
-    results = await asyncio.gather(*tasks)
-    user_cnt, m1_cnt, m2_cnt, neon_cnt, active_users, m1_ok, m2_ok, neon_ok, sl_on, ads_cnt = results
+    # 3. Monetization & Ads Data (NEW ADDITION)
+    shortlink_status_task = safe_db_call(db_primary.get_config("shortlink_enabled", False), default=False)
+    shortlink_api_task = safe_db_call(db_primary.get_config("shortlink_api", "Not Set"), default="Not Set")
+    # Assuming 'ads' collection exists as used in /listads
+    active_ads_task = safe_db_call(db_primary.ads.count_documents({}), default=0)
 
-    # --- 3. VISUAL HELPERS ---
-    def get_bar(percent):
-        """Creates a visual progress bar [||||    ]"""
-        filled = int(percent / 10) 
-        bar = "▮" * filled + "▯" * (10 - filled)
-        return bar
-
-    def get_state(is_ok):
-        return "🟢" if is_ok else "🔴"
-
-    # Engine Status Logic
-    engine_status = "✅ Stable"
-    if not m1_ok: engine_status = "⚠️ M1 Down"
-    elif not neon_ok: engine_status = "⚠️ Neon Down"
-    
-    # Cache Status
-    redis_icon = "🟢" if redis_cache.is_ready() else "🔴"
-    
-    # Time
-    server_time = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-    
-    # --- 4. HTML CONSTRUCTION (NO NESTING) ---
-    # NOTE: Using <b>Title:</b> <code>Value</code> pattern strictly.
-    
-    dashboard_text = (
-        f"🖥 <b>SERVER CONTROL MATRIX</b>\n"
-        f"➖➖➖➖➖➖➖➖➖➖\n"
-        f"<b>⏱ Uptime:</b> <code>{uptime_str}</code>\n"
-        f"<b>⌚ Time:</b> <code>{server_time}</code>\n\n"
-
-        f"📊 <b>RESOURCE MONITOR</b>\n"
-        f"<b>CPU:</b> <code>[{get_bar(cpu_usage)}] {cpu_usage}%</code>\n"
-        f"<b>RAM:</b> <code>[{get_bar(ram_usage)}] {ram_used}/{ram_total}GB</code>\n"
-        f"<b>DSK:</b> <code>[{get_bar(disk_usage)}] {disk_usage}%</code>\n"
-        f"<b>NET:</b> <code>⬆️{sent_gb}GB | ⬇️{recv_gb}GB</code>\n\n"
-
-        f"🗄 <b>DATABASE CLUSTER</b>\n"
-        f"<b>M1 (Pri):</b> {get_state(m1_ok)} <code>{m1_cnt:,} Files</code>\n"
-        f"<b>M2 (Bkp):</b> {get_state(m2_ok)} <code>{m2_cnt:,} Files</code>\n"
-        f"<b>NeonDB:</b>  {get_state(neon_ok)} <code>{neon_cnt:,} Vectors</code>\n\n"
-
-        f"⚙️ <b>SYSTEM VITALS</b>\n"
-        f"<b>Redis:</b> {redis_icon} | <b>Queue:</b> <code>{priority_queue._queue.qsize()}</code>\n"
-        f"<b>Engine:</b> <code>{engine_status}</code>\n"
-        f"<b>Index:</b> <code>{len(fuzzy_movie_cache):,} Keys</code>\n\n"
-
-        f"👥 <b>LIVE TRAFFIC</b>\n"
-        f"<b>Total Users:</b> <code>{user_cnt:,}</code>\n"
-        f"<b>Active (5m):</b> <code>{active_users} / {CURRENT_CONC_LIMIT}</code>\n"
-        f"<b>Ads/Links:</b> <code>{'ON' if sl_on else 'OFF'}</code> | <code>{ads_cnt} Ads</code>\n"
-        f"➖➖➖➖➖➖➖➖➖➖"
+    # 4. Gather All Data concurrently
+    (
+        user_count, m1_count, m2_count, neon_count, active_users,
+        m1_ok, m2_ok, neon_ok,
+        sl_enabled, sl_api, ads_count
+    ) = await asyncio.gather(
+        user_count_task, mongo_1_count_task, mongo_2_count_task, neon_count_task, concurrent_users_task,
+        mongo_1_ready_task, mongo_2_ready_task, neon_ready_task,
+        shortlink_status_task, shortlink_api_task, active_ads_task
     )
 
-    # Refresh Button with Timestamp to ensure data changes
-    ts = int(time.time())
+    redis_ok = redis_cache.is_ready()
+
+    # 5. Icons & Formatting
+    def status_icon(is_ok): return "🟢 Online" if is_ok else "🔴 Offline"
+    def cache_icon(is_ok): return "🟢 Active" if is_ok else "🟠 Degraded"
+    
+    # Search Engine Logic Status
+    search_status = "⚡ Hybrid (Smart Sequence)"
+    if not m1_ok: search_status = "⚠️ Degraded (Primary DB Down)"
+    if len(fuzzy_movie_cache) == 0: search_status = "⚠️ Cache Empty (Run /reload...)"
+
+    # Shortlink Domain Extraction
+    sl_domain = "N/A"
+    if sl_api and "http" in sl_api:
+        try:
+            sl_domain = sl_api.split("/")[2]
+        except:
+            sl_domain = "Custom API"
+
+    monetization_icon = "🟢 ON" if sl_enabled else "🔴 OFF"
+
+    # 6. Final Dashboard Text
+    dashboard_text = (
+        f"🛡️ *COMMANDER DASHBOARD V2*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"*💰 MONETIZATION & ADS*\n"
+        f"• *Shortlink System:* {monetization_icon}\n"
+        f"• *Provider:* {sl_domain}\n"
+        f"• *Active Campaigns (Ads):* {ads_count}\n\n"
+
+        f"*🖥️ INFRASTRUCTURE*\n"
+        f"• *Primary Node (M1):* {status_icon(m1_ok)} | 📂 {m1_count:,}\n"
+        f"• *Fallback Node (M2):* {status_icon(m2_ok)} | 📂 {m2_count:,}\n"
+        f"• *Neon Backup:* {status_icon(neon_ok)} | 📂 {neon_count:,}\n"
+        f"• *Redis Cache:* {cache_icon(redis_ok)}\n\n"
+        
+        f"*🚦 TRAFFIC & USAGE*\n"
+        f"• *Total Users:* {user_count:,}\n"
+        f"• *Active Now (5m):* {active_users:,} / {CURRENT_CONC_LIMIT}\n"
+        f"• *Queue Load:* {priority_queue._queue.qsize()} tasks\n"
+        f"• *Search Engine:* {search_status}\n"
+        f"• *Memory Cache:* {len(fuzzy_movie_cache):,} titles\n"
+        f"• *Uptime:* {get_uptime()}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    
+    # Refresh Button
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"🔄 Refresh Data", callback_data="admin_stats_cmd")],
-        [InlineKeyboardButton(text="◀️ Close Connection", callback_data="start_cmd")]
+        [InlineKeyboardButton(text="🔄 Refresh Stats", callback_data="admin_stats_cmd")],
+        [InlineKeyboardButton(text="🛠 Open Command Hub", callback_data="admin_panel_open")]
     ])
     
     return dashboard_text, keyboard
-
   
 async def stats_command(message: types.Message, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
     # UI: Working state
