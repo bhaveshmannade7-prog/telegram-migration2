@@ -1,103 +1,121 @@
 # core_utils.py
+# -*- coding: utf-8 -*-
 import asyncio
 import logging
+from typing import Any, Coroutine, Optional, Union
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
 
 # Logger Setup
 logger = logging.getLogger("bot.core_utils")
 
-# ============ GLOBAL SEMAPHORES & CONSTANTS (STABLE LIMITS) ============
-# NOTE: Ye limits kam hain (5-15) kyunki free server (Render/Atlas) 
-# heavy parallel traffic handle nahi kar sakte. Ise badhana mat.
+# ============ GLOBAL STABILITY CONSTANTS ============
+# NOTE: Ye limits FREE TIER servers (Render/Heroku/Atlas) ke liye optimized hain.
+# Inhe badhane se bot "Freeze" ya "Crash" ho sakta hai.
 
-TG_OP_TIMEOUT = 10
-DB_OP_TIMEOUT = 15
+TG_OP_TIMEOUT = 10   # Telegram API calls timeout
+DB_OP_TIMEOUT = 15   # Database queries timeout
 
-# Connection Limits (Old Working Values)
-DB_SEMAPHORE = asyncio.Semaphore(5)  # Sirf 5 DB calls ek saath (Queue maintain karega)
-TELEGRAM_DELETE_SEMAPHORE = asyncio.Semaphore(10)
-TELEGRAM_COPY_SEMAPHORE = asyncio.Semaphore(10)
-TELEGRAM_BROADCAST_SEMAPHORE = asyncio.Semaphore(15)
-WEBHOOK_SEMAPHORE = asyncio.Semaphore(1) 
+# --- TRAFFIC CONTROL (SEMAPHORES) ---
+# "Old is Gold" Settings - Low concurrency prevents deadlocks
+DB_SEMAPHORE = asyncio.Semaphore(5)                # Sirf 5 DB calls ek saath (Deadlock Killer)
+TELEGRAM_DELETE_SEMAPHORE = asyncio.Semaphore(10)  # Delete limits
+TELEGRAM_COPY_SEMAPHORE = asyncio.Semaphore(10)    # Copy/Forward limits
+TELEGRAM_BROADCAST_SEMAPHORE = asyncio.Semaphore(15) # Broadcast throttling
+WEBHOOK_SEMAPHORE = asyncio.Semaphore(1)           # Webhook setup limit
 
 # Default fallback semaphore
 DEFAULT_TG_SEMAPHORE = asyncio.Semaphore(5)
 
-# --- 1. SAFE DATABASE CALL (Queue Based) ---
-async def safe_db_call(coro, timeout=DB_OP_TIMEOUT, default=None):
+# --- 1. ULTIMATE DATABASE CALL WRAPPER ---
+async def safe_db_call(coro_or_value: Any, timeout: int = DB_OP_TIMEOUT, default: Any = None) -> Any:
     """
-    Stabilized DB Wrapper:
-    - Queue system use karta hai (Semaphore=5).
-    - Agar 5 requests chal rahi hain, to 6th wait karegi (Crash nahi karegi).
+    Stabilized DB Wrapper (The Anti-Freeze Version):
+    - Handles Async functions AND Static values automatically.
+    - Uses strict Semaphore (5) to prevent CPU overload.
     """
-    # Safety Check: Agar galti se function call karke bhej diya (await na kiya ho)
-    if not asyncio.iscoroutine(coro):
-        # logger.warning(f"Non-coroutine passed to DB call: {coro}")
-        return coro # Value return kar do
+    # 1. Static Value Check: Agar ye function nahi hai, to seedha return karo
+    if not asyncio.iscoroutine(coro_or_value):
+        return coro_or_value
 
     try:
-        # Lock acquire karo (Wait forever until slot is free)
+        # 2. Semaphore Lock: Line mein lago
         async with DB_SEMAPHORE: 
-            # Slot milne ke baad timeout shuru karo
-            return await asyncio.wait_for(coro, timeout=timeout)
+            # 3. Execution with Timeout: Slot milne ke baad run karo
+            return await asyncio.wait_for(coro_or_value, timeout=timeout)
             
     except asyncio.TimeoutError:
-        logger.error(f"⚠️ DB Timeout ({timeout}s) - Server slow hai.")
+        logger.warning(f"⚠️ DB Slow: Query took >{timeout}s (Skipped to prevent freeze)")
+        # Coroutine close cleanup (Memory leak prevent)
+        try:
+            coro_or_value.close()
+        except: 
+            pass
         return default
+        
     except Exception as e:
-        logger.error(f"❌ DB Error: {e}", exc_info=True)
+        logger.error(f"❌ DB Error: {e}", exc_info=False) # Full stack trace ki zarurat nahi
         return default
 
 
-# --- 2. SAFE TELEGRAM CALL (Paced & Mounted) ---
-async def safe_tg_call(coro, timeout=TG_OP_TIMEOUT, semaphore: asyncio.Semaphore | None = None, bot: Bot | None = None):
+# --- 2. ULTIMATE TELEGRAM CALL WRAPPER ---
+async def safe_tg_call(
+    coro: Coroutine, 
+    timeout: int = TG_OP_TIMEOUT, 
+    semaphore: asyncio.Semaphore | None = None, 
+    bot: Bot | None = None
+) -> Any:
     """
-    Stabilized TG Wrapper:
-    - 0.1s sleep add kiya hai (Rate Limit bachane ke liye).
-    - Bot instance mount karta hai (RuntimeError fix).
+    Smart TG Wrapper (The 'No-Crash' Version):
+    - Includes 'Pacing' (Sleep 0.1s) to prevent FloodWait.
+    - Auto-Fixes 'Bot Context' errors.
     """
-    # Agar koi semaphore nahi diya, to default chhota semaphore use karo
+    # Agar semaphore None hai, to default safe limit use karo
     semaphore_to_use = semaphore or DEFAULT_TG_SEMAPHORE
 
     try:
         async with semaphore_to_use:
-            # 1. Pacing (The Magic Logic): Thoda ruko taaki flood na ho
+            # --- THE MAGIC PACING FIX ---
+            # Har request se pehle thoda sa pause. Ye bot ko block hone se bachata hai.
             if semaphore: 
                 await asyncio.sleep(0.1) 
             
-            # 2. Context Fix: Bot instance bind karo (Agar available hai)
+            # --- CONTEXT MOUNTING FIX ---
+            # Aiogram 3.x mein bot instance bind karna zaroori hai
             if bot and hasattr(coro, "as_"):
                 coro = coro.as_(bot)
-            
-            # 3. Execute with Timeout
+                
+            # Execute
             return await asyncio.wait_for(coro, timeout=timeout)
             
     except asyncio.TimeoutError: 
-        logger.warning(f"⚠️ TG Timeout: Request took >{timeout}s")
+        logger.warning(f"⚠️ TG Timeout: API did not respond in {timeout}s")
         return None
+
+    except TelegramRetryAfter as e:
+        # Agar Telegram bole "Ruko", to hum rukenge (Crash nahi karenge)
+        wait_time = e.retry_after
+        logger.warning(f"⏳ FloodWait: Sleeping for {wait_time}s...")
+        await asyncio.sleep(wait_time if wait_time < 10 else 5) # Max 5s sleep inside handler
+        return None 
         
     except (TelegramAPIError, TelegramBadRequest) as e:
         err_msg = str(e).lower()
         
-        # Ignored Errors (Logs clean rakhne ke liye)
-        if "bot was blocked" in err_msg or "user is deactivated" in err_msg:
-            return False
-        elif "chat not found" in err_msg or "peer_id_invalid" in err_msg:
-            return False
-        elif "message is not modified" in err_msg:
-            return None # Ye Dashboard refresh ke liye normal hai
-        elif "message to delete not found" in err_msg:
-            return None
-        elif "too many requests" in err_msg:
-            # FloodWait handling
-            logger.warning(f"⏳ FloodWait detected: {e}")
-            await asyncio.sleep(5) 
-            return None
-        else:
-            logger.error(f"❌ TG API Error: {e}")
-            return None
+        # Ignored Errors (Log file clean rakhne ke liye)
+        if any(x in err_msg for x in ["bot was blocked", "user is deactivated", "chat not found", "peer_id_invalid"]):
+            return False 
+        
+        if "message is not modified" in err_msg:
+            # Dashboard Refresh ke liye: Ye Success hai!
+            return True 
+            
+        if "message to delete not found" in err_msg:
+            return None 
+
+        logger.error(f"❌ TG API Error: {e}")
+        return None
             
     except Exception as e:
-        logger.error(f"❌ TG Unknown Error: {e}", exc_info=False)
+        logger.exception(f"❌ TG Critical Crash: {e}")
         return None
