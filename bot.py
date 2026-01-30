@@ -2405,101 +2405,84 @@ async def admin_stats_callback(callback: types.CallbackQuery, db_primary: Databa
         # Fallback agar fancy dashboard fail ho jaye
         await safe_tg_call(callback.message.edit_text(f"⚠️ **Dashboard Error**\n{str(e)[:100]}", reply_markup=None))
 
-
-
-# =======================================================
-# +++++ FINAL DASHBOARD REPAIR (DEBUG VERSION) +++++
-# =======================================================
-
-import html # HTML tag errors rokne ke liye
-import traceback # Asli error dikhane ke liye
-import time
-import psutil
-
 async def generate_admin_dashboard(db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
     """
-    Generates text/markup. Uses HTML escaping to prevent 'Parse Error'.
+    Generates the text and markup for the admin dashboard.
+    Fetches: User counts, Movie counts, System Health, Monetization Status, Ads Stats.
     """
-    # 1. System Metrics (Non-blocking)
-    try:
-        # Interval 0 rakha hai taaki bot ruke nahi
-        cpu_p = psutil.cpu_percent(interval=None) or psutil.cpu_percent(interval=0.1)
-    except:
-        cpu_p = 0
-
-    # 2. Database Counts
-    # Hum gather use karenge taaki sab ek saath fetch ho
-    tasks = [
-        safe_db_call(db_primary.get_user_count(), default=0),
-        safe_db_call(db_primary.get_movie_count(), default=0),
-        safe_db_call(db_fallback.get_movie_count(), default=0),
-        safe_db_call(db_neon.get_movie_count(), default=0),
-        safe_db_call(db_primary.get_concurrent_user_count(ACTIVE_WINDOW_MINUTES), default=0),
-        safe_db_call(db_primary.is_ready(), default=False),
-        safe_db_call(db_fallback.is_ready(), default=False),
-        safe_db_call(db_neon.is_ready(), default=False),
-        safe_db_call(db_primary.get_config("shortlink_enabled", False), default=False),
-        safe_db_call(db_primary.get_config("shortlink_api", "Not Set"), default="Not Set"),
-        safe_db_call(db_primary.ads.count_documents({}), default=0)
-    ]
-
-    results = await asyncio.gather(*tasks)
+    # 1. Database Health & Counts
+    user_count_task = safe_db_call(db_primary.get_user_count(), default=0)
+    mongo_1_count_task = safe_db_call(db_primary.get_movie_count(), default=0)
+    mongo_2_count_task = safe_db_call(db_fallback.get_movie_count(), default=0)
+    neon_count_task = safe_db_call(db_neon.get_movie_count(), default=0)
+    concurrent_users_task = safe_db_call(db_primary.get_concurrent_user_count(ACTIVE_WINDOW_MINUTES), default=0)
     
-    (user_count, m1_count, m2_count, neon_count, active_users,
-     m1_ok, m2_ok, neon_ok,
-     sl_enabled, sl_api, ads_count) = results
+    # 2. Connection Checks
+    mongo_1_ready_task = safe_db_call(db_primary.is_ready(), default=False)
+    mongo_2_ready_task = safe_db_call(db_fallback.is_ready(), default=False)
+    neon_ready_task = safe_db_call(db_neon.is_ready(), default=False)
+    
+    # 3. Monetization & Ads Data (NEW ADDITION)
+    shortlink_status_task = safe_db_call(db_primary.get_config("shortlink_enabled", False), default=False)
+    shortlink_api_task = safe_db_call(db_primary.get_config("shortlink_api", "Not Set"), default="Not Set")
+    # Assuming 'ads' collection exists as used in /listads
+    active_ads_task = safe_db_call(db_primary.ads.count_documents({}), default=0)
+
+    # 4. Gather All Data concurrently
+    (
+        user_count, m1_count, m2_count, neon_count, active_users,
+        m1_ok, m2_ok, neon_ok,
+        sl_enabled, sl_api, ads_count
+    ) = await asyncio.gather(
+        user_count_task, mongo_1_count_task, mongo_2_count_task, neon_count_task, concurrent_users_task,
+        mongo_1_ready_task, mongo_2_ready_task, neon_ready_task,
+        shortlink_status_task, shortlink_api_task, active_ads_task
+    )
 
     redis_ok = redis_cache.is_ready()
 
-    # 3. Formatting Helpers (HTML SAFE)
+    # 5. Icons & Formatting
     def status_icon(is_ok): return "🟢 Online" if is_ok else "🔴 Offline"
     def cache_icon(is_ok): return "🟢 Active" if is_ok else "🟠 Degraded"
-
-    # Search Logic Status
+    
+    # Search Engine Logic Status
     search_status = "⚡ Hybrid (Smart Sequence)"
     if not m1_ok: search_status = "⚠️ Degraded (Primary DB Down)"
-    
-    # URL Cleaning & Escaping (CRITICAL FIX)
+    if len(fuzzy_movie_cache) == 0: search_status = "⚠️ Cache Empty (Run /reload...)"
+
+    # Shortlink Domain Extraction
     sl_domain = "N/A"
-    if sl_api and "http" in str(sl_api):
+    if sl_api and "http" in sl_api:
         try:
-            sl_domain = str(sl_api).split("/")[2]
+            sl_domain = sl_api.split("/")[2]
         except:
             sl_domain = "Custom API"
-    
-    # HTML ESCAPE: Ye line sabse zaruri hai.
-    # Agar domain me ya text me koi bhi strange symbol hoga to ye usse fix karega.
-    sl_domain = html.escape(sl_domain)
-    
-    monetization_icon = "🟢 <b>ON</b>" if sl_enabled else "🔴 <b>OFF</b>"
-    
-    # Unique ID to force refresh (No "Message Not Modified" error)
-    ref_id = str(time.time())[-5:]
 
-    # 4. Final Dashboard Text (Strict HTML)
+    monetization_icon = "🟢 ON" if sl_enabled else "🔴 OFF"
+
+    # 6. Final Dashboard Text
     dashboard_text = (
-        f"🛡️ <b>COMMANDER DASHBOARD V2</b>\n"
+        f"🛡️ *COMMANDER DASHBOARD V2*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>💰 MONETIZATION & ADS</b>\n"
-        f"• <b>Shortlink System:</b> {monetization_icon}\n"
-        f"• <b>Provider:</b> <code>{sl_domain}</code>\n"
-        f"• <b>Active Campaigns (Ads):</b> {ads_count}\n\n"
+        f"*💰 MONETIZATION & ADS*\n"
+        f"• *Shortlink System:* {monetization_icon}\n"
+        f"• *Provider:* {sl_domain}\n"
+        f"• *Active Campaigns (Ads):* {ads_count}\n\n"
 
-        f"<b>🖥️ INFRASTRUCTURE</b>\n"
-        f"• <b>Primary Node (M1):</b> {status_icon(m1_ok)} | 📂 <code>{m1_count:,}</code>\n"
-        f"• <b>Fallback Node (M2):</b> {status_icon(m2_ok)} | 📂 <code>{m2_count:,}</code>\n"
-        f"• <b>Neon Backup:</b> {status_icon(neon_ok)} | 📂 <code>{neon_count:,}</code>\n"
-        f"• <b>Redis Cache:</b> {cache_icon(redis_ok)}\n\n"
+        f"*🖥️ INFRASTRUCTURE*\n"
+        f"• *Primary Node (M1):* {status_icon(m1_ok)} | 📂 {m1_count:,}\n"
+        f"• *Fallback Node (M2):* {status_icon(m2_ok)} | 📂 {m2_count:,}\n"
+        f"• *Neon Backup:* {status_icon(neon_ok)} | 📂 {neon_count:,}\n"
+        f"• *Redis Cache:* {cache_icon(redis_ok)}\n\n"
         
-        f"<b>🚦 TRAFFIC & USAGE</b>\n"
-        f"• <b>CPU Load:</b> <code>{cpu_p}%</code>\n"
-        f"• <b>Total Users:</b> <code>{user_count:,}</code>\n"
-        f"• <b>Active Now:</b> <code>{active_users:,} / {CURRENT_CONC_LIMIT}</code>\n"
-        f"• <b>Queue Load:</b> <code>{priority_queue._queue.qsize()}</code> tasks\n"
-        f"• <b>Search Engine:</b> {search_status}\n"
-        f"• <b>Memory Cache:</b> <code>{len(fuzzy_movie_cache):,}</code> titles\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>Ref: {ref_id}</i>"
+        f"*🚦 TRAFFIC & USAGE*\n"
+        f"• *Total Users:* {user_count:,}\n"
+        f"• *Active Now (5m):* {active_users:,} / {CURRENT_CONC_LIMIT}\n"
+        f"• *Queue Load:* {priority_queue._queue.qsize()} tasks\n"
+        f"• *Search Engine:* {search_status}\n"
+        f"• *Memory Cache:* {len(fuzzy_movie_cache):,} titles\n"
+        f"• *Uptime:* {get_uptime()}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     
     # Refresh Button
@@ -2509,8 +2492,6 @@ async def generate_admin_dashboard(db_primary: Database, db_fallback: Database, 
     ])
     
     return dashboard_text, keyboard
-
-# --- HANDLER REPLACEMENT ---
 
 @dp.message(Command("stats"), AdminFilter())
 @handler_timeout(30)
