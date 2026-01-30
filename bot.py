@@ -76,6 +76,8 @@ from fastapi import FastAPI, BackgroundTasks, Request, HTTPException
 from database import Database
 from neondb import NeonDB
 ADMIN_ACTIVE_TASKS = {} 
+    # --- GLOBAL MEMORY FALLBACK ---
+LOCAL_SEARCH_CACHE = {} 
 # ============ LOGGING SETUP ============
 logging.basicConfig(
     level=logging.INFO,
@@ -1599,7 +1601,7 @@ async def banned_search_movie_handler_stub(message: types.Message): pass
 # +++++ NEW: ADVANCED SEARCH HANDLERS (Private & Group) +++++
 # ==================================================
 
-# --- REPLACEMENT CODE FOR SEARCH PROCESSING (CACHE OVERWRITE FIX) ---
+# --- REPLACEMENT CODE FOR SEARCH PROCESSING (FAIL-SAFE MODE) ---
 async def process_search_results(
     query: str, 
     user_id: int, 
@@ -1609,178 +1611,187 @@ async def process_search_results(
     bot_username: str = ""
 ) -> tuple[str, InlineKeyboardMarkup | None, str | None]:
     """
-    ULTIMATE ENGINE V8 (CACHE FIX + V16 BANNER):
-    - Fix: Forces NEW search when user types text (Bypasses old cache).
-    - Fix: Uses Cache ONLY for Pagination (Next/Back buttons).
-    - Features: V7 Smart Scoring, V16 Studio Banner, Redis + RAM Fallback.
+    ULTIMATE ENGINE V9 (FAIL-SAFE):
+    - Fix: Added try-except blocks to prevent 'Stuck on Searching'.
+    - Fix: Robust Redis handling (Won't crash if Redis is slow/down).
+    - Fix: Ensures user always gets a response (Result or Error Message).
     """
-    limit_per_page = 8 
-    cache_key = f"search_res:{user_id}"
-    query_key = f"last_query:{user_id}"
-    final_results = []
-    
-    # --- STEP 1: SMART SESSION HANDLING ---
-    
-    # CASE A: PAGINATION REQUEST (Next/Back Button)
-    # Jab user button dabata hai, query "ignored" hoti hai.
-    # Sirf tabhi hum Cache (Redis/RAM) load karenge.
-    if query == "ignored":
-        # 1. Try Redis
-        if redis_cache.is_ready():
-            cached_data = await redis_cache.get(cache_key)
-            if cached_data:
-                try: final_results = json.loads(cached_data)
-                except: pass
+    try:
+        limit_per_page = 8 
+        cache_key = f"search_res:{user_id}"
+        query_key = f"last_query:{user_id}"
+        final_results = []
         
-        # 2. Try Local RAM (Fallback)
-        if not final_results:
-            if user_id in LOCAL_SEARCH_CACHE:
+        # --- STEP 1: SMART SESSION HANDLING ---
+        
+        # CASE A: PAGINATION (Next/Back Button) - Load from Cache
+        if query == "ignored":
+            # 1. Try Redis Safely
+            try:
+                if redis_cache.is_ready():
+                    cached_data = await redis_cache.get(cache_key)
+                    if cached_data: final_results = json.loads(cached_data)
+            except Exception as e:
+                logger.error(f"Redis Read Error: {e}")
+            
+            # 2. Try RAM Fallback (If Redis failed or empty)
+            if not final_results and user_id in LOCAL_SEARCH_CACHE:
                 saved_data = LOCAL_SEARCH_CACHE[user_id]
-                # 15 Minute Expiry Check
-                if (datetime.now().timestamp() - saved_data['time']) < 900:
+                if (datetime.now().timestamp() - saved_data['time']) < 900: # 15 min expiry
                     final_results = saved_data['results']
-        
-        # 3. Auto-Restore Query (For UI)
-        if redis_cache.is_ready():
-            saved_query = await redis_cache.get(query_key)
-            if saved_query: query = saved_query
-        elif user_id in LOCAL_SEARCH_CACHE:
-            query = LOCAL_SEARCH_CACHE[user_id].get('query', 'Unknown')
-
-    # CASE B: NEW SEARCH REQUEST (User typed text)
-    # Agar query "ignored" nahi hai, iska matlab user ne nayi movie mangi hai.
-    # Yaha hum Cache load NAHI karenge, taaki purana "Lokah" result na aye.
-    else:
-        final_results = [] # Force empty list to trigger new search
-    
-    # --- STEP 2: EXECUTE FRESH SEARCH (If needed) ---
-    if not final_results and query != "ignored":
-        if not fuzzy_movie_cache: return "⚠️ **System Indexing...** Wait 5s.", None, None
-        
-        loop = asyncio.get_running_loop()
-        
-        # 🔥 V7 ENGINE: Search Logic
-        fuzzy_hits_raw = await loop.run_in_executor(
-            executor, 
-            partial(python_fuzzy_search, cache_snapshot=fuzzy_movie_cache), 
-            query, 800 
-        )
-        
-        seen_imdb = set()
-        temp_results = []
-        for movie in fuzzy_hits_raw:
-            if movie['imdb_id'] not in seen_imdb and len(movie['title']) > 1:
-                temp_results.append(movie)
-                seen_imdb.add(movie['imdb_id'])
-        
-        # 🔥 V7 SORTING: Score High -> Low
-        try:
-            final_results = sorted(temp_results, key=lambda x: x.get('score', 0), reverse=True)
-        except:
-            final_results = temp_results
-
-        # --- SAVE NEW RESULTS (Overwrite Old Cache) ---
-        if final_results:
-            # 1. Save to Redis
+            
+            # 3. Restore Query String
             if redis_cache.is_ready():
-                await redis_cache.set(cache_key, json.dumps(final_results), ttl=900)
-                await redis_cache.set(query_key, query, ttl=900)
-            
-            # 2. Save to RAM
-            LOCAL_SEARCH_CACHE[user_id] = {
-                'results': final_results,
-                'query': query,
-                'time': datetime.now().timestamp()
-            }
+                try:
+                    saved_query = await redis_cache.get(query_key)
+                    if saved_query: query = saved_query
+                except: pass
+            elif user_id in LOCAL_SEARCH_CACHE:
+                query = LOCAL_SEARCH_CACHE[user_id].get('query', 'Unknown')
 
-    if not final_results: return None, None, None
-
-    # --- STEP 3: PAGINATION LOGIC ---
-    total_results = len(final_results)
-    start_idx = page * limit_per_page
-    end_idx = start_idx + limit_per_page
-    
-    # Fix: End of list protection
-    if start_idx >= total_results and page > 0:
-        return "⚠️ **End of List reached.**", None, None
-        
-    page_results = final_results[start_idx:end_idx]
-
-    # --- STEP 4: UI GENERATION (V16 STYLE) ---
-    buttons = []
-    poster_url = None
-    
-    # === HEADER: BEST MATCH BANNER ===
-    if page == 0:
-        top_movie = page_results[0] 
-        t_title = top_movie.get('title', 'Unknown')
-        t_year = top_movie.get('year') or "N/A"
-        t_id = top_movie.get('imdb_id', 'N/A')
-        
-        # 🔥 CALLING V16 BANNER ENGINE
-        poster_url = get_poster_url(t_id, t_title, t_year)
-        
-        text = (
-            f"🎬 **SEARCH RESULTS**\n"
-            f"──────────────────\n\n"
-            f"🍿 **{t_title}**\n"
-            f"📅 Year: {t_year}  |  📂 Total Files: {total_results}\n\n"
-            f"👇 **Select your file below:**"
-        )
-        
-        label = f"📥 Fast Download: {t_title}"[:30] + "..."
-        if is_group:
-            link = f"https://t.me/{bot_username}?start=get_{t_id}"
-            buttons.append([InlineKeyboardButton(text=label, url=link)])
+        # CASE B: NEW SEARCH - Force Fresh Search
         else:
-            buttons.append([InlineKeyboardButton(text=label, callback_data=f"get_{t_id}")])
+            final_results = [] 
+        
+        # --- STEP 2: EXECUTE FRESH SEARCH ---
+        if not final_results and query != "ignored":
+            # Check if DB is loaded
+            if not fuzzy_movie_cache: 
+                return "⚠️ **System Indexing...**\nDatabase is loading. Try again in 10 seconds.", None, None
             
-        if len(page_results) > 1:
-            buttons.append([InlineKeyboardButton(text=f"🔻 — FILE LIBRARY — 🔻", callback_data="ignore")])
+            loop = asyncio.get_running_loop()
             
-        remaining_list = page_results[1:]
-    else:
-        text = f"🗂 **Library Page {page+1}**\nFound {total_results} matches. Select file:"
-        remaining_list = page_results
+            # 🔥 Execute Search (Safe Mode)
+            try:
+                fuzzy_hits_raw = await loop.run_in_executor(
+                    executor, 
+                    partial(python_fuzzy_search, cache_snapshot=fuzzy_movie_cache), 
+                    query, 800 
+                )
+            except Exception as e:
+                logger.error(f"Search Engine Crash: {e}")
+                return f"⚠️ **Search Failed**: Internal Engine Error ({str(e)[:20]})", None, None
+            
+            # Filter & Deduplicate
+            seen_imdb = set()
+            temp_results = []
+            for movie in fuzzy_hits_raw:
+                if movie['imdb_id'] not in seen_imdb and len(movie['title']) > 1:
+                    temp_results.append(movie)
+                    seen_imdb.add(movie['imdb_id'])
+            
+            # Sort Results
+            try:
+                final_results = sorted(temp_results, key=lambda x: x.get('score', 0), reverse=True)
+            except:
+                final_results = temp_results
 
-    # === FILE LIST BUTTONS ===
-    for movie in remaining_list:
-        display = movie['title']
-        if movie.get('year'): display += f" ({movie['year']})"
+            # --- SAVE RESULTS (Redis + RAM) ---
+            if final_results:
+                # Redis Save
+                try:
+                    if redis_cache.is_ready():
+                        await redis_cache.set(cache_key, json.dumps(final_results), ttl=900)
+                        await redis_cache.set(query_key, query, ttl=900)
+                except Exception as e:
+                    logger.error(f"Redis Write Error: {e}")
+                
+                # RAM Save (Always works)
+                LOCAL_SEARCH_CACHE[user_id] = {
+                    'results': final_results,
+                    'query': query,
+                    'time': datetime.now().timestamp()
+                }
+
+        # If still no results
+        if not final_results: 
+            return None, None, None
+
+        # --- STEP 3: PAGINATION ---
+        total_results = len(final_results)
+        start_idx = page * limit_per_page
+        end_idx = start_idx + limit_per_page
         
-        # Smart Icons
-        icon = "📁"
-        score = movie.get('score', 0)
-        if score >= 900: icon = "🌟"
-        elif score >= 500: icon = "⚡"
+        if start_idx >= total_results and page > 0:
+            return "⚠️ **End of List.**", None, None
+            
+        page_results = final_results[start_idx:end_idx]
+
+        # --- STEP 4: UI GENERATION (V16) ---
+        buttons = []
+        poster_url = None
         
-        btn_text = f"{icon} {display[:50]}"
-        
-        if is_group:
-            url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
-            buttons.append([InlineKeyboardButton(text=btn_text, url=url)])
+        # Header & Banner
+        if page == 0:
+            top_movie = page_results[0]
+            t_title = top_movie.get('title', 'Unknown')
+            t_id = top_movie.get('imdb_id', 'N/A')
+            
+            # Safe Poster Call
+            try:
+                poster_url = get_poster_url(t_id, t_title, top_movie.get('year', ''))
+            except:
+                poster_url = "https://i.ibb.co/9p43Y4k/default-movie.jpg"
+            
+            text = (
+                f"🎬 **SEARCH RESULTS**\n"
+                f"──────────────────\n\n"
+                f"🍿 **{t_title}**\n"
+                f"📂 Found: {total_results} files\n\n"
+                f"👇 **Select your file below:**"
+            )
+            
+            label = f"📥 Fast Download: {t_title}"[:30] + "..."
+            if is_group:
+                link = f"https://t.me/{bot_username}?start=get_{t_id}"
+                buttons.append([InlineKeyboardButton(text=label, url=link)])
+            else:
+                buttons.append([InlineKeyboardButton(text=label, callback_data=f"get_{t_id}")])
+                
+            if len(page_results) > 1:
+                buttons.append([InlineKeyboardButton(text=f"🔻 — FILE LIBRARY — 🔻", callback_data="ignore")])
+            
+            remaining_list = page_results[1:]
         else:
-            buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"get_{movie['imdb_id']}")])
+            text = f"🗂 **Page {page+1}** | Found {total_results} matches"
+            remaining_list = page_results
 
-    # === NAVIGATION & REQUEST BUTTON ===
-    nav_row = []
-    
-    if page > 0: 
-        nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
-    
-    req_group_link = f"https://t.me/{USER_GROUP_USERNAME}" if USER_GROUP_USERNAME else "https://t.me/telegram"
-    nav_row.append(InlineKeyboardButton(text="⚠️ Request Movie", url=req_group_link))
+        # Buttons List
+        for movie in remaining_list:
+            display = movie['title']
+            if movie.get('year'): display += f" ({movie['year']})"
+            
+            score = movie.get('score', 0)
+            icon = "🌟" if score >= 900 else ("⚡" if score >= 500 else "📁")
+            
+            btn_text = f"{icon} {display[:40]}"
+            
+            if is_group:
+                url = f"https://t.me/{bot_username}?start=get_{movie['imdb_id']}"
+                buttons.append([InlineKeyboardButton(text=btn_text, url=url)])
+            else:
+                buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"get_{movie['imdb_id']}")])
 
-    if end_idx < total_results: 
-        nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
-    
-    if nav_row: buttons.append(nav_row)
-    
-    total_pages = (total_results + limit_per_page - 1) // limit_per_page
-    buttons.append([InlineKeyboardButton(text=f"📄 Page {page+1} of {total_pages}", callback_data="ignore")])
+        # Navigation
+        nav_row = []
+        if page > 0: 
+            nav_row.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"psearch:{page-1}:{1 if is_group else 0}"))
+        
+        req_link = f"https://t.me/{USER_GROUP_USERNAME}" if USER_GROUP_USERNAME else "https://t.me/telegram"
+        nav_row.append(InlineKeyboardButton(text="⚠️ Request", url=req_link))
 
-    return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
-       
+        if end_idx < total_results: 
+            nav_row.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"psearch:{page+1}:{1 if is_group else 0}"))
+        
+        if nav_row: buttons.append(nav_row)
+        
+        return text, InlineKeyboardMarkup(inline_keyboard=buttons), poster_url
+
+    except Exception as e:
+        # Ultimate Fail-Safe: Agar upar kuch bhi crash hua, to ye message dikhega
+        logger.error(f"Critical Process Error: {e}", exc_info=True)
+        return f"❌ **System Error**: {str(e)[:50]}...", None, None
+  
 # --- 1. PRIVATE SEARCH (AUTO-DELETE: 4 MIN) ---
 @dp.message(
     StateFilter(None), 
