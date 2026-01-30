@@ -2405,111 +2405,170 @@ async def admin_stats_callback(callback: types.CallbackQuery, db_primary: Databa
         # Fallback agar fancy dashboard fail ho jaye
         await safe_tg_call(callback.message.edit_text(f"⚠️ **Dashboard Error**\n{str(e)[:100]}", reply_markup=None))
 
-# =======================================================
-# +++++ ULTIMATE DASHBOARD FIX (HTML + FORCE REFRESH) +++++
-# =======================================================
 
-import html # HTML escaping ke liye zaroori hai
-import psutil # System metrics ke liye
 
 # =======================================================
-# +++++ FIX: BULLETPROOF DASHBOARD (MARKDOWN + NO FREEZE) +++++
+# +++++ FINAL DASHBOARD REPAIR (DEBUG VERSION) +++++
 # =======================================================
 
-import uuid # Force refresh ke liye
-import psutil # System metrics
+import html # HTML tag errors rokne ke liye
+import traceback # Asli error dikhane ke liye
+import time
+import psutil
 
-# --- 1. ROBUST DASHBOARD GENERATOR ---
 async def generate_admin_dashboard(db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
     """
-    Generates admin dashboard using MARKDOWN to prevent HTML parsing errors.
-    Includes timeouts for all metrics to prevent freezing.
+    Generates text/markup. Uses HTML escaping to prevent 'Parse Error'.
     """
-    # A. System Metrics (With Safety Guard)
+    # 1. System Metrics (Non-blocking)
     try:
-        # 0.1s timeout non-blocking check
-        cpu_p = psutil.cpu_percent(interval=None) 
-        if cpu_p == 0: cpu_p = psutil.cpu_percent(interval=0.1)
-        
-        ram = psutil.virtual_memory()
-        ram_p = ram.percent
-        ram_used = round(ram.used / (1024**3), 1)
-        ram_total = round(ram.total / (1024**3), 1)
-    except Exception:
-        cpu_p, ram_p, ram_used, ram_total = 0, 0, 0, 0
+        # Interval 0 rakha hai taaki bot ruke nahi
+        cpu_p = psutil.cpu_percent(interval=None) or psutil.cpu_percent(interval=0.1)
+    except:
+        cpu_p = 0
 
-    # B. Database Calls (Safe Wrappers)
-    # Hum gather use karenge taaki ek slow DB baaki dashboard ko na roke
+    # 2. Database Counts
+    # Hum gather use karenge taaki sab ek saath fetch ho
     tasks = [
-        safe_db_call(db_primary.get_user_count(), default=0),          
-        safe_db_call(db_primary.get_movie_count(), default=0),         
-        safe_db_call(db_fallback.get_movie_count(), default=0),        
-        safe_db_call(db_neon.get_movie_count(), default=0),            
-        safe_db_call(db_primary.get_concurrent_user_count(ACTIVE_WINDOW_MINUTES), default=0), 
-        safe_db_call(db_primary.is_ready(), default=False),            
-        safe_db_call(db_fallback.is_ready(), default=False),           
-        safe_db_call(db_neon.is_ready(), default=False),               
-        safe_db_call(db_primary.get_config("shortlink_enabled", False), default=False), 
-        safe_db_call(db_primary.ads.count_documents({}), default=0)    
+        safe_db_call(db_primary.get_user_count(), default=0),
+        safe_db_call(db_primary.get_movie_count(), default=0),
+        safe_db_call(db_fallback.get_movie_count(), default=0),
+        safe_db_call(db_neon.get_movie_count(), default=0),
+        safe_db_call(db_primary.get_concurrent_user_count(ACTIVE_WINDOW_MINUTES), default=0),
+        safe_db_call(db_primary.is_ready(), default=False),
+        safe_db_call(db_fallback.is_ready(), default=False),
+        safe_db_call(db_neon.is_ready(), default=False),
+        safe_db_call(db_primary.get_config("shortlink_enabled", False), default=False),
+        safe_db_call(db_primary.get_config("shortlink_api", "Not Set"), default="Not Set"),
+        safe_db_call(db_primary.ads.count_documents({}), default=0)
     ]
-    
+
     results = await asyncio.gather(*tasks)
-    user_cnt, m1_cnt, m2_cnt, neon_cnt, active_users, m1_ok, m2_ok, neon_ok, sl_on, ads_cnt = results
+    
+    (user_count, m1_count, m2_count, neon_count, active_users,
+     m1_ok, m2_ok, neon_ok,
+     sl_enabled, sl_api, ads_count) = results
 
-    # C. Formatting Helpers
-    def get_mark(is_ok): return "✅" if is_ok else "❌"
-    
-    # Monetization Status
-    monetization_txt = "Enabled" if sl_on else "Disabled"
-    
-    # Redis Check
     redis_ok = redis_cache.is_ready()
-    redis_mark = "✅" if redis_ok else "❌"
 
-    # Search Engine Status
-    engine_state = "Stable"
-    if not m1_ok or not neon_ok: engine_state = "Degraded"
+    # 3. Formatting Helpers (HTML SAFE)
+    def status_icon(is_ok): return "🟢 Online" if is_ok else "🔴 Offline"
+    def cache_icon(is_ok): return "🟢 Active" if is_ok else "🟠 Degraded"
+
+    # Search Logic Status
+    search_status = "⚡ Hybrid (Smart Sequence)"
+    if not m1_ok: search_status = "⚠️ Degraded (Primary DB Down)"
     
-    # Generate Unique ID to bypass "Message Not Modified" error
-    refresh_id = str(uuid.uuid4())[:8]
+    # URL Cleaning & Escaping (CRITICAL FIX)
+    sl_domain = "N/A"
+    if sl_api and "http" in str(sl_api):
+        try:
+            sl_domain = str(sl_api).split("/")[2]
+        except:
+            sl_domain = "Custom API"
+    
+    # HTML ESCAPE: Ye line sabse zaruri hai.
+    # Agar domain me ya text me koi bhi strange symbol hoga to ye usse fix karega.
+    sl_domain = html.escape(sl_domain)
+    
+    monetization_icon = "🟢 <b>ON</b>" if sl_enabled else "🔴 <b>OFF</b>"
+    
+    # Unique ID to force refresh (No "Message Not Modified" error)
+    ref_id = str(time.time())[-5:]
 
-    # D. Final Dashboard Text (MARKDOWN STYLE)
-    # Note: Markdown me bold ke liye *text* aur code ke liye `text` use hota hai
+    # 4. Final Dashboard Text (Strict HTML)
     dashboard_text = (
-        f"🎛 *SYSTEM COMMAND CONSOLE* `[v6.0]`\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"*⚙️ SERVER LOAD*\n"
-        f"• CPU: `{cpu_p}%`  |  RAM: `{ram_p}%`\n"
-        f"• Used: `{ram_used}GB / {ram_total}GB`\n\n"
+        f"🛡️ <b>COMMANDER DASHBOARD V2</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>💰 MONETIZATION & ADS</b>\n"
+        f"• <b>Shortlink System:</b> {monetization_icon}\n"
+        f"• <b>Provider:</b> <code>{sl_domain}</code>\n"
+        f"• <b>Active Campaigns (Ads):</b> {ads_count}\n\n"
 
-        f"*🗄 DATABASE CLUSTERS*\n"
-        f"• Primary M1: {get_mark(m1_ok)} `{m1_cnt:,}`\n"
-        f"• Fallback M2: {get_mark(m2_ok)} `{m2_cnt:,}`\n"
-        f"• Neon Vector: {get_mark(neon_ok)} `{neon_cnt:,}`\n\n"
-
-        f"*📡 NETWORK & CACHE*\n"
-        f"• Redis Status: {redis_mark}\n"
-        f"• Fuzzy Index: `{len(fuzzy_movie_cache):,}` keys\n"
-        f"• Engine State: `{engine_state}`\n\n"
-
-        f"*👥 USER TRAFFIC*\n"
-        f"• Total Users: `{user_cnt:,}`\n"
-        f"• Active Now: `{active_users} / {CURRENT_CONC_LIMIT}`\n"
-        f"• Queue Depth: `{priority_queue._queue.qsize()}`\n\n"
+        f"<b>🖥️ INFRASTRUCTURE</b>\n"
+        f"• <b>Primary Node (M1):</b> {status_icon(m1_ok)} | 📂 <code>{m1_count:,}</code>\n"
+        f"• <b>Fallback Node (M2):</b> {status_icon(m2_ok)} | 📂 <code>{m2_count:,}</code>\n"
+        f"• <b>Neon Backup:</b> {status_icon(neon_ok)} | 📂 <code>{neon_count:,}</code>\n"
+        f"• <b>Redis Cache:</b> {cache_icon(redis_ok)}\n\n"
         
-        f"*💰 REVENUE SYSTEM*\n"
-        f"• Shortlink: `{monetization_txt}`\n"
-        f"• Active Ads: `{ads_cnt}`\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"_Ref ID: {refresh_id}_"
+        f"<b>🚦 TRAFFIC & USAGE</b>\n"
+        f"• <b>CPU Load:</b> <code>{cpu_p}%</code>\n"
+        f"• <b>Total Users:</b> <code>{user_count:,}</code>\n"
+        f"• <b>Active Now:</b> <code>{active_users:,} / {CURRENT_CONC_LIMIT}</code>\n"
+        f"• <b>Queue Load:</b> <code>{priority_queue._queue.qsize()}</code> tasks\n"
+        f"• <b>Search Engine:</b> {search_status}\n"
+        f"• <b>Memory Cache:</b> <code>{len(fuzzy_movie_cache):,}</code> titles\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>Ref: {ref_id}</i>"
     )
     
+    # Refresh Button
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Force Refresh", callback_data="admin_stats_cmd")],
-        [InlineKeyboardButton(text="🛠 Open Command Panel", callback_data="admin_panel_open")]
+        [InlineKeyboardButton(text="🔄 Refresh Stats", callback_data="admin_stats_cmd")],
+        [InlineKeyboardButton(text="🛠 Open Command Hub", callback_data="admin_panel_open")]
     ])
     
     return dashboard_text, keyboard
+
+# --- HANDLER REPLACEMENT ---
+
+@dp.message(Command("stats"), AdminFilter())
+@handler_timeout(30)
+async def stats_command(message: types.Message, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
+    # Step 1: Send placeholder
+    try:
+        wait_msg = await message.answer("📊 <b>Analysing System...</b>", parse_mode="HTML")
+    except Exception as e:
+        # Agar ye fail hua matlab Parse Mode ki galti hai
+        wait_msg = await message.answer(f"Error sending wait message: {e}")
+        return
+
+    try:
+        # Step 2: Generate Data
+        text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
+        
+        # Step 3: Edit Message (DIRECT CALL - NO WRAPPER)
+        # Hum safe_tg_call use nahi kar rahe taaki asli error dikhe
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=wait_msg.message_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        # CRITICAL ERROR LOGGING
+        error_trace = traceback.format_exc()
+        logger.error(f"STATS CRASHED: {error_trace}")
+        
+        # User ko batao ki galti kahan hai
+        error_msg = f"❌ <b>DASHBOARD CRASHED</b>\n\n<b>Reason:</b> {str(e)}\n\nCheck Logs for details."
+        # Safe edit
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=wait_msg.message_id,
+            text=error_msg,
+            parse_mode="HTML"
+        )
+
+@dp.callback_query(F.data == "admin_stats_cmd", AdminFilter())
+@handler_timeout(30)
+async def admin_stats_callback(callback: types.CallbackQuery, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
+    try:
+        text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
+        
+        await bot.edit_message_text(
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+        await callback.answer("✅ Refreshed")
+        
+    except Exception as e:
+        logger.error(f"STATS CALLBACK CRASHED: {e}")
+        await callback.answer(f"❌ Error: {str(e)[:50]}", show_alert=True)
 
 # --- 2. COMMAND HANDLER ---
 @dp.message(Command("stats"), AdminFilter())
