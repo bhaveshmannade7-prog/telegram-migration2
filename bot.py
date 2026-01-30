@@ -9,6 +9,7 @@ import signal
 import json
 import hashlib
 import random 
+import html
 import psutil # System metrics ke liye
 import time # Timestamp ke liye
 import uuid # Naya: Unique IDs ke liye
