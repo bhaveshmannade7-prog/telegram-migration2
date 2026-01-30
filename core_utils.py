@@ -2,115 +2,138 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
-from typing import Any, Callable, Union, Coroutine
-
+import contextlib
+from typing import Any, Callable, Coroutine
 from aiogram import Bot
-from aiogram.exceptions import (
-    TelegramAPIError, 
-    TelegramBadRequest, 
-    TelegramRetryAfter, 
-    TelegramNetworkError
-)
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramRetryAfter
 
 # Logger Setup
 logger = logging.getLogger("bot.core_utils")
 
-# ============ GLOBAL CONSTANTS (Optimized) ============
-TG_OP_TIMEOUT = 25  # Telegram API timeout (slow server ke liye badhaya)
-DB_OP_TIMEOUT = 20  # Database query timeout
+# ============ GLOBAL OPTIMIZED CONSTANTS ============
+# Timeout settings (Seconds)
+TG_OP_TIMEOUT = 25  # Telegram API calls ke liye
+DB_OP_TIMEOUT = 20  # Database queries ke liye
 
-# ============ SMART SEMAPHORES ============
-# Hum limits ko kaafi high rakh rahe hain taaki bot kabhi stuck na ho
-DB_SEMAPHORE = asyncio.Semaphore(200)               
-TELEGRAM_DELETE_SEMAPHORE = asyncio.Semaphore(50)   
-TELEGRAM_COPY_SEMAPHORE = asyncio.Semaphore(50)     
-TELEGRAM_BROADCAST_SEMAPHORE = asyncio.Semaphore(50)
-DEFAULT_TG_SEMAPHORE = asyncio.Semaphore(100)       
+# ============ SMART SEMAPHORES (High Performance) ============
+# Humne limit ko 500 kar diya hai taaki kabhi bhi bottleneck na ho.
+# MongoDB Atlas 500 connections easily handle kar sakta hai.
 
-# --- 1. ROBUST DATABASE WRAPPER ---
-async def safe_db_call(func_or_coro: Union[Callable, Coroutine], timeout: int = DB_OP_TIMEOUT, default: Any = None):
+# Database ke liye High Limit (Read/Write mixed)
+DB_SEMAPHORE = asyncio.Semaphore(500) 
+
+# Telegram limits (API guidelines ke hisaab se safe limits)
+TELEGRAM_DELETE_SEMAPHORE = asyncio.Semaphore(30)
+TELEGRAM_COPY_SEMAPHORE = asyncio.Semaphore(30)
+TELEGRAM_BROADCAST_SEMAPHORE = asyncio.Semaphore(40)
+DEFAULT_TG_SEMAPHORE = asyncio.Semaphore(100) # General messages
+
+# ============ HELPER FUNCTIONS ============
+
+async def _run_with_semaphore(semaphore: asyncio.Semaphore, coro: Coroutine):
+    """Internal helper to acquire semaphore and run coroutine."""
+    async with semaphore:
+        return await coro
+
+# --- 1. HYBRID DATABASE CALL WRAPPER (CRASH PROOF) ---
+async def safe_db_call(coro_or_value: Any, timeout: int = DB_OP_TIMEOUT, default: Any = None) -> Any:
     """
-    ULTIMATE DB CALL HANDLER:
-    1. Checks if input is a Value, Function, or Coroutine.
-    2. Handles Timeouts gracefully without freezing the bot.
-    3. Returns 'default' value on failure so Dashboard doesn't crash.
+    ULTIMATE DB WRAPPER v2:
+    - Fixes 'Indefinite Wait': Timeout covers BOTH waiting for lock AND execution.
+    - Handles Sync values automatically.
     """
+    # 1. Agar value Async Coroutine nahi hai (e.g. static data), to direct return karo
+    if not asyncio.iscoroutine(coro_or_value):
+        return coro_or_value
+
     try:
-        # Case A: Input is already a computed value (Not a function/coroutine)
-        if not asyncio.iscoroutine(func_or_coro) and not callable(func_or_coro):
-            return func_or_coro
-
-        # Case B: Input is a Coroutine (Async Function Call)
-        if asyncio.iscoroutine(func_or_coro):
-            async with DB_SEMAPHORE:
-                return await asyncio.wait_for(func_or_coro, timeout=timeout)
-
-        # Case C: Input is a callable function (Sync or Async wrapper)
-        if callable(func_or_coro):
-            res = func_or_coro()
-            if asyncio.iscoroutine(res):
-                async with DB_SEMAPHORE:
-                    return await asyncio.wait_for(res, timeout=timeout)
-            return res
-
+        # 2. Timeout Wrapper (SABSE ZAROORI FIX)
+        # Hum timeout ko bahar lagate hain. Agar Semaphore milne me time laga,
+        # to bhi ye cancel ho jayega. Bot freeze nahi hoga.
+        return await asyncio.wait_for(
+            _run_with_semaphore(DB_SEMAPHORE, coro_or_value),
+            timeout=timeout
+        )
     except asyncio.TimeoutError:
-        logger.warning(f"⚠️ DB Timeout ({timeout}s) - Returning default: {default}")
+        logger.warning(f"⚠️ DB Slow/Busy: Query cancelled after {timeout}s")
+        # Coroutine ko close karna zaroori hai taaki 'was never awaited' warning na aaye
+        try:
+            coro_or_value.close()
+        except: 
+            pass
         return default
-        
     except Exception as e:
-        logger.error(f"❌ DB Critical Error: {e}", exc_info=True)
+        logger.error(f"❌ DB Error: {e}", exc_info=False)
         return default
 
-
-# --- 2. INTELLIGENT TELEGRAM WRAPPER ---
+# --- 2. SMART TELEGRAM CALL WRAPPER (CONTEXT AWARE) ---
 async def safe_tg_call(
     coro: Coroutine, 
     timeout: int = TG_OP_TIMEOUT, 
-    semaphore: asyncio.Semaphore = None, 
-    bot: Bot = None
-):
+    semaphore: asyncio.Semaphore | None = None, 
+    bot: Bot | None = None
+) -> Any:
     """
-    SMART TG WRAPPER:
-    - Automatically handles 'Message Not Modified' (Stops Loading Circle).
-    - Handles 'FloodWait' (Auto-Sleep).
-    - Prevents 'Bot Context' errors.
+    Smart Wrapper for Telegram API:
+    - Auto-mounts 'bot' instance to fix ContextVar/RuntimeError.
+    - Handles FloodWait, Blocked User, and Deleted Message errors gracefully.
     """
     sem = semaphore or DEFAULT_TG_SEMAPHORE
     
+    # FIX: Bot context mount logic
+    if bot is not None:
+        # Aiogram 3.x trick: Request ko bot instance ke saath bind karo
+        if hasattr(coro, "as_"):
+            coro = coro.as_(bot)
+
     try:
-        async with sem:
-            # FIX: Ensure Bot Context is valid
-            if bot is not None and hasattr(coro, "as_"):
-                coro = coro.as_(bot)
-            
-            return await asyncio.wait_for(coro, timeout=timeout)
+        # Timeout covers lock acquisition + execution
+        return await asyncio.wait_for(
+            _run_with_semaphore(sem, coro),
+            timeout=timeout
+        )
 
     except asyncio.TimeoutError:
-        logger.warning(f"⚠️ TG Request Timeout ({timeout}s) - Skipped.")
+        logger.warning(f"⚠️ TG Timeout: API call took >{timeout}s")
         return None
 
     except TelegramRetryAfter as e:
-        # FloodWait: Ye sabse zaroori fix hai
+        # FloodWait handle karna zaroori hai
         wait_time = e.retry_after
         logger.warning(f"⏳ FloodWait: Sleeping for {wait_time}s...")
         await asyncio.sleep(wait_time)
         return None # Retry logic caller par chhodte hain complex na karne ke liye
 
-    except TelegramBadRequest as e:
-        err = str(e).lower()
-        if "message is not modified" in err:
-            # Ye Error nahi, Success hai! (Dashboard refresh logic ke liye)
-            return True 
-        if "chat not found" in err or "message to delete not found" in err:
-            return None
+    except (TelegramAPIError, TelegramBadRequest) as e:
+        err_msg = str(e).lower()
         
-        logger.error(f"❌ TG Bad Request: {e}")
-        return None
+        # Ignored Errors (Log spam kam karne ke liye)
+        if any(x in err_msg for x in ["bot was blocked", "user is deactivated", "chat not found", "peer_id_invalid"]):
+            return False 
+        
+        if "message is not modified" in err_msg:
+            # Dashboard refresh ke liye ye success hai
+            return True 
+            
+        if "message to delete not found" in err_msg:
+            return None 
 
-    except TelegramNetworkError:
-        logger.warning("⚠️ TG Network Error: Connection Unstable.")
+        logger.error(f"❌ TG API Error: {e}")
         return None
-
+            
     except Exception as e:
-        logger.error(f"❌ TG Unknown Error: {e}", exc_info=True)
+        logger.error(f"❌ TG Critical Crash: {e}", exc_info=True)
+        return None
+
+# --- 3. SYNC TO ASYNC WRAPPER (For PSUTIL) ---
+async def run_sync(func: Callable, *args, **kwargs) -> Any:
+    """
+    Runs blocking functions (like psutil, json.load) in a separate thread.
+    Prevents Event Loop Lag.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+    except Exception as e:
+        logger.error(f"Async Wrapper Error: {e}")
         return None
