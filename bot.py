@@ -645,7 +645,6 @@ def get_quality_label(filename: str) -> str:
     if "2160" in f or "4k" in f: return "🌟 4K UHD"
     return "🎬 Watch Now"
 def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
-def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
     ULTIMATE BANNER ENGINE V15 (SHARP STUDIO MODE)
     ----------------------------------------------
