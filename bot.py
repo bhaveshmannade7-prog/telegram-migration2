@@ -645,66 +645,56 @@ def get_quality_label(filename: str) -> str:
     if "2160" in f or "4k" in f: return "🌟 4K UHD"
     return "🎬 Watch Now"
 def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
+def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    ULTIMATE BANNER ENGINE V14 (CINEMATIC MODE)
-    -------------------------------------------
-    Features:
-    1. Accuracy: Prioritizes OMDb (Official ID) > Google/Bing Specific Query.
-    2. Zero Crop: Uses 'fit=contain' to keep the full vertical poster visible.
-    3. Cinematic Look: Adds a generated 'Blurred Background' matching the poster colors.
-    4. Compact Size: Forces 16:9 Aspect Ratio (Landscape) to save chat screen space.
-    5. Zero Load: All image processing happens on external CDN (wsrv.nl).
+    ULTIMATE BANNER ENGINE V15 (SHARP STUDIO MODE)
+    ----------------------------------------------
+    FIXED: Removed 'blur' parameter that caused the main image to blur.
+    STYLE: 'Netflix Dark' background. Poster stays 100% sharp in center.
+    ACCURACY: Strict OMDb priority.
+    LOAD: 0% Server Load (External Proxy).
     """
     import urllib.parse
 
-    # 1. Sanity Check (Garbage removal)
+    # 1. Sanity Check
     if not title or len(title.strip()) < 2:
         return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
 
     raw_url = ""
     
-    # --- LEVEL 1: OMDb API (100% Accuracy via IMDb ID) ---
-    # Agar IMDb ID valid hai (tt12345...), to OMDb se direct poster lo.
-    # Ye sabse accurate method hai kyunki ye ID match karta hai, naam nahi.
+    # --- LEVEL 1: OMDb API (Highest Accuracy) ---
+    # IMDb ID (tt12345...) is unique, so this never gives wrong image.
     if imdb_id and imdb_id.startswith("tt") and imdb_id[2:].isdigit():
-        omdb_key = "19f1d07c" # Free Tier Key
+        omdb_key = "19f1d07c" 
         raw_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
 
-    # --- LEVEL 2: FALLBACK SEARCH (High Precision) ---
-    # Agar OMDb fail ho ya ID na ho, to Search use karein.
+    # --- LEVEL 2: FALLBACK SEARCH (Strict Mode) ---
     else:
-        # Title clean karein taaki search accurate ho
         clean_title = re.sub(r"[^a-zA-Z0-9\s]", "", title).strip()
         if not clean_title: return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
 
-        # Query Optimization: Year ka use zaroori hai accuracy ke liye
+        # Bing Search is better for images than Google in bots
+        # Adding "high resolution" and specific markers
         if year and year.isdigit():
-            # Exact phrase match ke liye quotes lagaye
-            query = f'movie poster "{clean_title}" {year} high resolution'
+            query = f'movie poster "{clean_title}" {year} official vertical high resolution'
         else:
-            query = f'movie poster "{clean_title}" film official'
+            query = f'movie poster "{clean_title}" film official high resolution'
 
         safe_query = urllib.parse.quote(query)
-        # Bing se image uthayenge (Direct URL trick)
         raw_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=600&rs=1"
 
-    # --- LEVEL 3: CINEMATIC PROCESSING (The "Magic" Step) ---
-    # Ab hum image ko 'wsrv.nl' CDN par bhejkar realtime edit karenge.
-    
+    # --- LEVEL 3: PROFESSIONAL TRANSFORMATION (The Fix) ---
     if raw_url:
         safe_raw = urllib.parse.quote(raw_url)
         
-        # PARAMETERS EXPLAINED:
-        # url = Source Image
-        # w=1000, h=500 -> 2:1 Ratio (Perfect Twitter/Telegram Banner Size)
-        # fit=contain -> Poster ko crop mat karo, frame ke andar fit karo.
-        # bg=blur -> Side me jo jagah bachegi, waha poster ka hi 'Blur' version laga do.
-        # blur=20 -> Blur ki intensity.
-        # output=webp -> Faster loading, less data.
+        # PARAMETERS EXPLAINED (The Fix):
+        # 1. fit=contain: Poster ko bina kaate (No Crop) frame me fit karega.
+        # 2. w=1000&h=500: 2:1 Aspect Ratio (Perfect for Telegram Banners).
+        # 3. cbg=0d0d0d: (Canvas BG) Dark Grey Color (Netflix Style). NO BLUR.
+        # 4. output=webp: High quality, low data usage.
         
-        return f"https://wsrv.nl/?url={safe_raw}&w=1000&h=500&fit=contain&bg=blur&blur=15&output=webp"
+        return f"https://wsrv.nl/?url={safe_raw}&w=1000&h=500&fit=contain&a=center&cbg=0d0d0d&output=webp"
 
-    # Default Fallback
     return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
