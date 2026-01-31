@@ -649,83 +649,77 @@ def get_quality_label(filename: str) -> str:
     if "480" in f: return "📱 480p SD"
     if "2160" in f or "4k" in f: return "🌟 4K UHD"
     return "🎬 Watch Now"
- def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
+def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    ULTIMATE BANNER ENGINE V16 (ROBUST PRODUCTION MODE)
-    ----------------------------------------------
-    FIXED: "No Banner" issue resolved using User-Agent Headers.
-    STABILITY: Replaced 'HEAD' with 'GET (Stream)' for 100% reliability.
-    LOGIC: OMDb -> Bing Search -> Default (Fail-safe).
+    ULTIMATE BANNER ENGINE V17 (LEGENDARY STUDIO BUILD)
+    ---------------------------------------------------
+    STATUS: PRODUCTION READY (Anti-Indentation Error Fix)
+    FEATURE: 100% Banner Guarantee. Even default images get styled.
+    LOGIC: OMDb (Primary) -> Bing (Backup) -> Styled Default (Final).
     """
     import urllib.parse
     import re
     import requests
 
-    # 0. CONSTANTS & HEADERS (Crucial for bypassing blocks)
-    DEFAULT_IMG = "https://i.ibb.co/9p43Y4k/default-movie.jpg"
+    # --- CONFIGURATION (Legendary Mode) ---
+    # Netflix-style Dark Background Color
+    BG_COLOR = "0d0d0d" 
+    # High-Res Default Placeholder (Used if everything fails)
+    DEFAULT_RAW = "https://i.ibb.co/9p43Y4k/default-movie.jpg"
+    
+    # Fake Browser Headers (To bypass 403 blocks)
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
 
-    # 1. Sanity Check
-    if not title or len(title.strip()) < 2:
-        return DEFAULT_IMG
-
     raw_url = None
-    
-    # --- LEVEL 1: OMDb API (Primary Source) ---
-    if imdb_id and imdb_id.startswith("tt") and imdb_id[2:].isdigit():
-        omdb_key = "19f1d07c"
-        temp_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
-        
-        try:
-            # FIX: Use GET with stream=True (More reliable than HEAD)
-            # Timeout 2s ensures bot doesn't hang.
-            r = requests.get(temp_url, headers=HEADERS, stream=True, timeout=2)
-            
-            # Verify it's an actual image and not an XML error/Text
-            if r.status_code == 200 and 'image' in r.headers.get('content-type', '').lower():
-                raw_url = temp_url
-                r.close() # Close connection immediately
-        except Exception:
-            raw_url = None # Silently fail to fallback
+    omdb_key = "19f1d07c"
 
-    # --- LEVEL 2: FALLBACK SEARCH (If OMDb Failed/Missing) ---
+    # --- LEVEL 1: OMDb API (Precision Targeting) ---
+    if imdb_id and imdb_id.startswith("tt") and imdb_id[2:].isdigit():
+        try:
+            target_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
+            # Stream verify: Check if image exists without downloading the whole body
+            with requests.get(target_url, headers=HEADERS, stream=True, timeout=1.5) as r:
+                if r.status_code == 200 and 'image' in r.headers.get('content-type', '').lower():
+                    raw_url = target_url
+        except Exception:
+            pass # Silent fail to trigger fallback
+
+    # --- LEVEL 2: INTELLIGENT SEARCH (If OMDb Fails) ---
     if not raw_url:
         try:
             clean_title = re.sub(r"[^a-zA-Z0-9\s]", "", title).strip()
-            if not clean_title: return DEFAULT_IMG
+            if clean_title:
+                # Search Logic: Prioritize "Vertical" and "High Resolution"
+                if year and year.isdigit():
+                    query = f'movie poster "{clean_title}" {year} official vertical'
+                else:
+                    query = f'movie poster "{clean_title}" official vertical'
 
-            # Intelligent Query Construction
-            if year and year.isdigit():
-                query = f'movie poster "{clean_title}" {year} official vertical high resolution'
-            else:
-                query = f'movie poster "{clean_title}" film official high resolution'
-
-            # Bing Logic
-            safe_query = urllib.parse.quote(query)
-            candidate_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=600&rs=1"
-            
-            # Validation: Check if Bing returns a valid image
-            r = requests.get(candidate_url, headers=HEADERS, stream=True, timeout=2)
-            if r.status_code == 200:
-                raw_url = candidate_url
-                r.close()
+                safe_query = urllib.parse.quote(query)
+                bing_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=600&rs=1"
+                
+                # Validation: Verify Bing result is reachable
+                with requests.get(bing_url, headers=HEADERS, stream=True, timeout=1.5) as r:
+                    if r.status_code == 200:
+                        raw_url = bing_url
         except Exception:
-            pass # Fallback to default if search crashes
+            pass
 
-    # --- LEVEL 3: PROFESSIONAL TRANSFORMATION ---
-    if raw_url:
-        safe_raw = urllib.parse.quote(raw_url)
-        
-        # PARAMETERS (Netflix Style):
-        # fit=contain: No cropping
-        # w=1000&h=500: Banner Aspect Ratio
-        # cbg=0d0d0d: Seamless Dark Background
-        return f"https://wsrv.nl/?url={safe_raw}&w=1000&h=500&fit=contain&a=center&cbg=0d0d0d&output=webp"
+    # --- LEVEL 3: THE PROFESSIONAL FINISH (Universal Styler) ---
+    # Agar URL nahi mila, to Default Image use karo
+    final_source = raw_url if raw_url else DEFAULT_RAW
+    
+    # Safe Encoding
+    safe_raw = urllib.parse.quote(final_source)
 
-    # --- LEVEL 4: FINAL RESORT ---
-    return DEFAULT_IMG
+    # LEGENDARY PARAMETERS:
+    # 1. fit=contain: Image kabhi nahi kategi.
+    # 2. w=1000&h=500: Telegram Banner Standard.
+    # 3. cbg=...: Missing space ko dark color se fill karega (Professional look).
+    # 4. output=webp: Fast loading.
+    return f"https://wsrv.nl/?url={safe_raw}&w=1000&h=500&fit=contain&a=center&cbg={BG_COLOR}&output=webp"
 
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
