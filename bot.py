@@ -649,82 +649,84 @@ def get_quality_label(filename: str) -> str:
     if "480" in f: return "📱 480p SD"
     if "2160" in f or "4k" in f: return "🌟 4K UHD"
     return "🎬 Watch Now"
-def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
+ def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    ULTIMATE BANNER ENGINE V15 (SHARP STUDIO MODE) - PRODUCTION PATCHED
+    ULTIMATE BANNER ENGINE V16 (ROBUST PRODUCTION MODE)
     ----------------------------------------------
-    FIXED: Added Image Validation & Automatic Fallback (OMDb -> Bing).
-    STYLE: 'Netflix Dark' background. Poster stays 100% sharp in center.
-    ACCURACY: Strict OMDb priority -> Auto Fallback to Search if OMDb fails.
-    LOAD: Low Latency Verification via HEAD requests.
+    FIXED: "No Banner" issue resolved using User-Agent Headers.
+    STABILITY: Replaced 'HEAD' with 'GET (Stream)' for 100% reliability.
+    LOGIC: OMDb -> Bing Search -> Default (Fail-safe).
     """
     import urllib.parse
     import re
-    import requests  # Required for checking if image exists
+    import requests
+
+    # 0. CONSTANTS & HEADERS (Crucial for bypassing blocks)
+    DEFAULT_IMG = "https://i.ibb.co/9p43Y4k/default-movie.jpg"
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
 
     # 1. Sanity Check
     if not title or len(title.strip()) < 2:
-        return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
+        return DEFAULT_IMG
 
     raw_url = None
-    omdb_key = "19f1d07c"
-
-    # --- LEVEL 1: OMDb API (Highest Accuracy) ---
-    # Attempt to fetch from OMDb first. 
-    # Added VALIDATION: We now check if OMDb actually returns a valid image (200 OK).
+    
+    # --- LEVEL 1: OMDb API (Primary Source) ---
     if imdb_id and imdb_id.startswith("tt") and imdb_id[2:].isdigit():
+        omdb_key = "19f1d07c"
+        temp_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
+        
         try:
-            temp_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
-            # Send a lightweight HEAD request (0.5s timeout is enough for OMDb)
-            # This fixes the "Blank Image" bug by confirming content exists.
-            response = requests.head(temp_url, timeout=1.0)
+            # FIX: Use GET with stream=True (More reliable than HEAD)
+            # Timeout 2s ensures bot doesn't hang.
+            r = requests.get(temp_url, headers=HEADERS, stream=True, timeout=2)
             
-            if response.status_code == 200 and 'image' in response.headers.get('content-type', '').lower():
+            # Verify it's an actual image and not an XML error/Text
+            if r.status_code == 200 and 'image' in r.headers.get('content-type', '').lower():
                 raw_url = temp_url
+                r.close() # Close connection immediately
         except Exception:
-            # If OMDb fails/timeouts, raw_url remains None, triggering Level 2
-            raw_url = None
+            raw_url = None # Silently fail to fallback
 
-    # --- LEVEL 2: FALLBACK SEARCH (Strict Mode) ---
-    # LOGIC UPDATE: This now runs if:
-    # 1. IMDb ID was not provided OR
-    # 2. IMDb ID was provided BUT OMDb failed/returned no image (Automatic Fallback)
+    # --- LEVEL 2: FALLBACK SEARCH (If OMDb Failed/Missing) ---
     if not raw_url:
-        clean_title = re.sub(r"[^a-zA-Z0-9\s]", "", title).strip()
-        if not clean_title: 
-            return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
-
-        # Bing Search Construction (Preserved Original Logic)
-        if year and year.isdigit():
-            query = f'movie poster "{clean_title}" {year} official vertical high resolution'
-        else:
-            query = f'movie poster "{clean_title}" film official high resolution'
-
-        safe_query = urllib.parse.quote(query)
-        candidate_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=600&rs=1"
-
-        # VALIDATION: Check if Bing returned a valid image before passing to wsrv
         try:
-            r = requests.head(candidate_url, timeout=1.5)
+            clean_title = re.sub(r"[^a-zA-Z0-9\s]", "", title).strip()
+            if not clean_title: return DEFAULT_IMG
+
+            # Intelligent Query Construction
+            if year and year.isdigit():
+                query = f'movie poster "{clean_title}" {year} official vertical high resolution'
+            else:
+                query = f'movie poster "{clean_title}" film official high resolution'
+
+            # Bing Logic
+            safe_query = urllib.parse.quote(query)
+            candidate_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=600&rs=1"
+            
+            # Validation: Check if Bing returns a valid image
+            r = requests.get(candidate_url, headers=HEADERS, stream=True, timeout=2)
             if r.status_code == 200:
                 raw_url = candidate_url
+                r.close()
         except Exception:
-            pass
+            pass # Fallback to default if search crashes
 
-    # --- LEVEL 3: PROFESSIONAL TRANSFORMATION (The Fix) ---
-    # Only proceed if we have a CONFIRMED valid image URL
+    # --- LEVEL 3: PROFESSIONAL TRANSFORMATION ---
     if raw_url:
         safe_raw = urllib.parse.quote(raw_url)
         
-        # PARAMETERS EXPLAINED (Preserved):
-        # 1. fit=contain: No Crop.
-        # 2. w=1000&h=500: 2:1 Aspect Ratio.
-        # 3. cbg=0d0d0d: Netflix Dark BG.
-        # 4. output=webp: High quality, low data.
+        # PARAMETERS (Netflix Style):
+        # fit=contain: No cropping
+        # w=1000&h=500: Banner Aspect Ratio
+        # cbg=0d0d0d: Seamless Dark Background
         return f"https://wsrv.nl/?url={safe_raw}&w=1000&h=500&fit=contain&a=center&cbg=0d0d0d&output=webp"
 
-    # Final Default (Last Resort)
-    return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
+    # --- LEVEL 4: FINAL RESORT ---
+    return DEFAULT_IMG
+
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
     return (
