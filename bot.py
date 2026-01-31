@@ -651,54 +651,79 @@ def get_quality_label(filename: str) -> str:
     return "🎬 Watch Now"
 def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    ULTIMATE BANNER ENGINE V15 (SHARP STUDIO MODE)
+    ULTIMATE BANNER ENGINE V15 (SHARP STUDIO MODE) - PRODUCTION PATCHED
     ----------------------------------------------
-    FIXED: Removed 'blur' parameter that caused the main image to blur.
+    FIXED: Added Image Validation & Automatic Fallback (OMDb -> Bing).
     STYLE: 'Netflix Dark' background. Poster stays 100% sharp in center.
-    ACCURACY: Strict OMDb priority.
-    LOAD: 0% Server Load (External Proxy).
+    ACCURACY: Strict OMDb priority -> Auto Fallback to Search if OMDb fails.
+    LOAD: Low Latency Verification via HEAD requests.
     """
     import urllib.parse
+    import re
+    import requests  # Required for checking if image exists
 
     # 1. Sanity Check
     if not title or len(title.strip()) < 2:
         return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
 
-    raw_url = ""
-    
+    raw_url = None
+    omdb_key = "19f1d07c"
+
     # --- LEVEL 1: OMDb API (Highest Accuracy) ---
-    # IMDb ID (tt12345...) is unique, so this never gives wrong image.
+    # Attempt to fetch from OMDb first. 
+    # Added VALIDATION: We now check if OMDb actually returns a valid image (200 OK).
     if imdb_id and imdb_id.startswith("tt") and imdb_id[2:].isdigit():
-        omdb_key = "19f1d07c" 
-        raw_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
+        try:
+            temp_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
+            # Send a lightweight HEAD request (0.5s timeout is enough for OMDb)
+            # This fixes the "Blank Image" bug by confirming content exists.
+            response = requests.head(temp_url, timeout=1.0)
+            
+            if response.status_code == 200 and 'image' in response.headers.get('content-type', '').lower():
+                raw_url = temp_url
+        except Exception:
+            # If OMDb fails/timeouts, raw_url remains None, triggering Level 2
+            raw_url = None
 
     # --- LEVEL 2: FALLBACK SEARCH (Strict Mode) ---
-    else:
+    # LOGIC UPDATE: This now runs if:
+    # 1. IMDb ID was not provided OR
+    # 2. IMDb ID was provided BUT OMDb failed/returned no image (Automatic Fallback)
+    if not raw_url:
         clean_title = re.sub(r"[^a-zA-Z0-9\s]", "", title).strip()
-        if not clean_title: return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
+        if not clean_title: 
+            return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
 
-        # Bing Search is better for images than Google in bots
-        # Adding "high resolution" and specific markers
+        # Bing Search Construction (Preserved Original Logic)
         if year and year.isdigit():
             query = f'movie poster "{clean_title}" {year} official vertical high resolution'
         else:
             query = f'movie poster "{clean_title}" film official high resolution'
 
         safe_query = urllib.parse.quote(query)
-        raw_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=600&rs=1"
+        candidate_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=600&rs=1"
+
+        # VALIDATION: Check if Bing returned a valid image before passing to wsrv
+        try:
+            r = requests.head(candidate_url, timeout=1.5)
+            if r.status_code == 200:
+                raw_url = candidate_url
+        except Exception:
+            pass
 
     # --- LEVEL 3: PROFESSIONAL TRANSFORMATION (The Fix) ---
+    # Only proceed if we have a CONFIRMED valid image URL
     if raw_url:
         safe_raw = urllib.parse.quote(raw_url)
         
-        # PARAMETERS EXPLAINED (The Fix):
-        # 1. fit=contain: Poster ko bina kaate (No Crop) frame me fit karega.
-        # 2. w=1000&h=500: 2:1 Aspect Ratio (Perfect for Telegram Banners).
-        # 3. cbg=0d0d0d: (Canvas BG) Dark Grey Color (Netflix Style). NO BLUR.
-        # 4. output=webp: High quality, low data usage.
-        
+        # PARAMETERS EXPLAINED (Preserved):
+        # 1. fit=contain: No Crop.
+        # 2. w=1000&h=500: 2:1 Aspect Ratio.
+        # 3. cbg=0d0d0d: Netflix Dark BG.
+        # 4. output=webp: High quality, low data.
         return f"https://wsrv.nl/?url={safe_raw}&w=1000&h=500&fit=contain&a=center&cbg=0d0d0d&output=webp"
 
+    # Final Default (Last Resort)
     return "https://i.ibb.co/9p43Y4k/default-movie.jpg"
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
