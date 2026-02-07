@@ -159,7 +159,20 @@ class NeonDB:
     async def _create_indexes_mongo(self):
         if self.collection is None: return
         try:
-            await self.collection.create_index("file_unique_id", unique=True)
+            # --- FIX: DROP OLD UNIQUE INDEX ON file_unique_id ---
+            # Agar purana unique index hai to use hata denge taaki duplicates allow ho sakein
+            try:
+                await self.collection.drop_index("file_unique_id_1")
+                logger.info("♻️ Old unique index on file_unique_id dropped (Fixed for Duplicates).")
+            except Exception:
+                pass # Index nahi tha ya naam alag tha, ignore karein
+
+            # Create normal index (Not Unique) on file_unique_id
+            await self.collection.create_index("file_unique_id")
+            
+            # Create UNIQUE index on message_id (Ek message do baar add na ho)
+            await self.collection.create_index("message_id", unique=True)
+
             await self.collection.create_index(
                 [("title", TEXT), ("imdb_id", TEXT)],
                 name="title_imdb_text_index"
@@ -202,6 +215,7 @@ class NeonDB:
         clean_title = re.sub(r"[._\-]+", " ", title).strip() if title else ""
         
         if self.mode == "postgres" and self.pool:
+            # Postgres logic remains same (Assumes Unique ID constraint in Table)
             sql = """
             INSERT INTO videos (message_id, channel_id, file_id, file_unique_id, imdb_id, title, search_vector)
             VALUES ($1, $2, $3, $4, $5, $6, to_tsvector('english', $6 || ' ' || COALESCE($5, '')))
@@ -231,8 +245,12 @@ class NeonDB:
                 "title_lower": clean_title.lower() if clean_title else ""
             }
             try:
+                # --- FIX: KEY IS NOW MESSAGE_ID ---
+                # Pehle hum file_unique_id se check karte the (jisse duplicates overwrite ho jate the).
+                # Ab hum message_id se check karenge. Isse agar same file alag message me aati hai,
+                # to wo DB me nayi row banegi.
                 await self.collection.update_one(
-                    {"file_unique_id": file_unique_id},
+                    {"message_id": message_id},
                     {"$set": doc},
                     upsert=True
                 )
@@ -375,9 +393,10 @@ class NeonDB:
                 bulk_ops = []
                 for m in chunk:
                     fid_unique = m.get('file_unique_id') or m.get('file_id')
+                    message_id = m.get('message_id') # Get Message ID
                     title = re.sub(r"[._\-]+", " ", m.get('title', '')).strip()
                     doc = {
-                        "message_id": m.get('message_id'),
+                        "message_id": message_id,
                         "channel_id": m.get('channel_id'),
                         "file_id": m.get('file_id'),
                         "file_unique_id": fid_unique,
@@ -385,7 +404,9 @@ class NeonDB:
                         "title": title,
                         "title_lower": title.lower()
                     }
-                    bulk_ops.append(UpdateOne({"file_unique_id": fid_unique}, {"$set": doc}, upsert=True))
+                    # --- FIX: Key on message_id instead of file_unique_id ---
+                    # Ensure each message is stored separately
+                    bulk_ops.append(UpdateOne({"message_id": message_id}, {"$set": doc}, upsert=True))
                 
                 if bulk_ops:
                     try:
@@ -416,7 +437,8 @@ class NeonDB:
                 {"$group": {
                     "_id": "$file_unique_id",
                     "count": {"$sum": 1},
-                    "ids": {"$push": "$_id"}
+                    "ids": {"$push": "$message_id"}, # Push Message ID
+                    "obj_ids": {"$push": "$_id"} # Push Object ID for deletion
                 }},
                 {"$match": {"count": {"$gt": 1}}}
             ]
@@ -424,14 +446,34 @@ class NeonDB:
                 # Use iterator to save memory
                 cursor = self.collection.aggregate(pipeline)
                 deleted_total = 0
+                messages_to_delete_info = [] # List of (message_id, channel_id)
+                
+                # We need channel ID to delete from telegram. 
+                # Assuming all duplicates are in same channel (usually true for single library channel)
+                # But safer to fetch.
                 
                 async for group in cursor:
-                    ids_to_delete = group['ids'][1:] # Keep first, delete rest
-                    if ids_to_delete:
-                        res = await self.collection.delete_many({"_id": {"$in": ids_to_delete}})
+                    # obj_ids[0] is kept, rest are deleted from DB
+                    # ids[0] is kept, rest are deleted from TG
+                    
+                    ids_to_delete_db = group['obj_ids'][1:] 
+                    msg_ids_to_delete_tg = group['ids'][1:]
+                    
+                    if ids_to_delete_db:
+                        # 1. Get Channel ID (Just fetch one doc from this group to know channel)
+                        sample_doc = await self.collection.find_one({"_id": ids_to_delete_db[0]}, {"channel_id": 1})
+                        channel_id = sample_doc.get("channel_id") if sample_doc else None
+
+                        if channel_id:
+                             for mid in msg_ids_to_delete_tg:
+                                 messages_to_delete_info.append((mid, channel_id))
+                        
+                        # 2. Delete from DB
+                        res = await self.collection.delete_many({"_id": {"$in": ids_to_delete_db}})
                         deleted_total += res.deleted_count
                         
-                return [], deleted_total
-            except Exception:
+                return messages_to_delete_info, deleted_total
+            except Exception as e:
+                logger.error(f"Duplicate Find Error: {e}")
                 return [], 0
         return [], 0
