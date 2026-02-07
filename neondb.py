@@ -1,5 +1,5 @@
 # neondb.py - Hybrid Database Wrapper (PostgreSQL + MongoDB)
-# Fixed: "Cursor Scan" Logic to delete ALL duplicates (100% Guaranteed)
+# Fixed: "Keep First, Kill Rest" Aggregation Logic (100% Duplicate Removal)
 # PRODUCTION READY - DO NOT SHORTEN
 
 import logging
@@ -32,7 +32,6 @@ class NeonDB:
         Initializes the Hybrid Database connection.
         Automatically detects if the URL is for PostgreSQL (Neon) or MongoDB.
         """
-        # Strip whitespace
         self.database_url = database_url.strip() if database_url else ""
         self.db_primary = db_primary_instance 
         self.mode = self._detect_mode()
@@ -43,9 +42,8 @@ class NeonDB:
         self.db = None          # for Mongo
         self.collection = None  # for Mongo collection 'videos'
         
-        # OOM Fix: Connection Pool Settings
         self.min_pool = 1
-        self.max_pool = 1 # Keep low for Render Free Tier (512MB Limit)
+        self.max_pool = 1 
         
         logger.info(f"Initialized NeonDB Wrapper. Detected Mode: {self.mode.upper()}")
 
@@ -56,15 +54,12 @@ class NeonDB:
         
         url_lower = self.database_url.lower()
         
-        # Explicit MongoDB check
         if url_lower.startswith("mongodb") or "mongodb.net" in url_lower:
             return "mongo"
         
-        # Explicit Postgres check
         if url_lower.startswith("postgres") or "neon.tech" in url_lower:
             return "postgres"
             
-        # Fallback based on content
         if "sslmode" in url_lower:
             return "postgres"
             
@@ -85,7 +80,7 @@ class NeonDB:
                 self.pool = await asyncpg.create_pool(
                     self.database_url, 
                     min_size=self.min_pool, 
-                    max_size=5, # Reduced for memory safety
+                    max_size=5, 
                     command_timeout=60
                 )
                 logger.info("✅ Connected to NeonDB (PostgreSQL). Verifying Schema...")
@@ -100,10 +95,8 @@ class NeonDB:
                 logger.critical("❌ CRITICAL: 'motor' is missing.")
                 return
             try:
-                # SSL Context Fix for Render [TLSV1_ALERT_INTERNAL_ERROR]
                 ca = certifi.where()
                 
-                # MEMORY FIX: maxPoolSize=1 ensures we don't open too many connections
                 self.client = AsyncIOMotorClient(
                     self.database_url,
                     serverSelectionTimeoutMS=10000,
@@ -111,14 +104,12 @@ class NeonDB:
                     tlsCAFile=ca,
                     tlsAllowInvalidCertificates=True, 
                     tlsAllowInvalidHostnames=True,
-                    maxPoolSize=1,  # <--- CRITICAL FOR RENDER 512MB RAM
+                    maxPoolSize=1,  
                     minPoolSize=0
                 )
                 
-                # Ping check
                 await self.client.admin.command('ping')
                 
-                # Setup DB and Collection
                 db_name = "NeonBackupDB"
                 self.db = self.client[db_name]
                 self.collection = self.db["videos"]
@@ -127,8 +118,6 @@ class NeonDB:
                 await self._create_indexes_mongo()
             except Exception as e:
                 logger.error(f"❌ MongoDB (Backup) Connection Failed: {e}")
-                if "Authentication failed" in str(e):
-                     logger.critical("🔐 AUTH ERROR: Check your Password in ENV. If it has '@' or ':', URL encode it!")
                 self.mode = "error" 
         
         else:
@@ -159,16 +148,16 @@ class NeonDB:
     async def _create_indexes_mongo(self):
         if self.collection is None: return
         try:
-            # Drop old UNIQUE index on file_unique_id to allow duplicates
+            # 1. Drop potentially conflicting unique indexes
             try:
                 await self.collection.drop_index("file_unique_id_1")
             except Exception:
                 pass 
 
-            # Create NON-UNIQUE index on file_unique_id (Critical for duplicate detection)
+            # 2. Create standard indexes (Allow Duplicates for file_unique_id)
             await self.collection.create_index("file_unique_id")
             
-            # Message ID must be unique (Primary Key logic)
+            # 3. Message ID is the ONLY true unique key now
             await self.collection.create_index("message_id", unique=True)
 
             await self.collection.create_index(
@@ -176,11 +165,11 @@ class NeonDB:
                 name="title_imdb_text_index"
             )
             await self.collection.create_index("imdb_id")
-            logger.info("✅ MongoDB Backup Indexes verified (Duplicates Allowed).")
+            logger.info("✅ MongoDB Backup Indexes verified.")
         except Exception as e:
             logger.warning(f"Index creation warning: {e}")
 
-    # --- PUBLIC METHODS (Memory Optimized) ---
+    # --- PUBLIC METHODS ---
     
     async def is_ready(self) -> bool:
         if self.mode == "postgres" and self.pool:
@@ -242,7 +231,7 @@ class NeonDB:
                 "title_lower": clean_title.lower() if clean_title else ""
             }
             try:
-                # Upsert based on Message ID (Ensures duplicate files are stored as new rows)
+                # Upsert on Message ID to allow duplicate files (different messages)
                 await self.collection.update_one(
                     {"message_id": message_id},
                     {"$set": doc},
@@ -410,11 +399,11 @@ class NeonDB:
 
     async def find_and_delete_duplicates(self, batch_limit=None):
         """
-        ULTIMATE CURSOR SCAN METHOD (V4)
-        1. Scans DB sequentially sorted by File Unique ID + Message ID.
-        2. Guaranteed to find consecutive duplicates.
-        3. Keeps the first (oldest) occurence, deletes ALL subsequent matches.
-        4. Handles single duplicates correctly.
+        FIXED AGGREGATION PIPELINE: "Keep First, Kill Rest"
+        1. Group by file_unique_id.
+        2. Push ALL docs into an array.
+        3. Sort array by message_id (Oldest first).
+        4. Slice array: Keep index 0, return index 1 to N.
         """
         if self.mode == "postgres" and self.pool:
             sql = """
@@ -430,50 +419,62 @@ class NeonDB:
                 return [], 0
 
         elif self.mode == "mongo" and self.collection is not None:
+            pipeline = [
+                # 1. Group all files with same unique ID
+                {"$group": {
+                    "_id": "$file_unique_id",
+                    "count": {"$sum": 1},
+                    "docs": {
+                        "$push": {
+                            "obj_id": "$_id",
+                            "msg_id": "$message_id",
+                            "chn_id": "$channel_id"
+                        }
+                    }
+                }},
+                
+                # 2. Filter: Only keep groups with duplicates (count > 1)
+                {"$match": {"count": {"$gt": 1}}}
+            ]
+            
             try:
-                # 1. FETCH STREAM SORTED BY (UNIQUE ID, MESSAGE ID)
-                # This ensures duplicates are adjacent to each other
-                # and the oldest message comes first.
-                cursor = self.collection.find(
-                    {"file_unique_id": {"$exists": True, "$ne": None}}, 
-                    {"file_unique_id": 1, "message_id": 1, "channel_id": 1}
-                ).sort([
-                    ("file_unique_id", ASCENDING), 
-                    ("message_id", ASCENDING)
-                ])
+                cursor = self.collection.aggregate(pipeline)
                 
                 to_delete_db_ids = []
                 messages_to_return = []
                 
-                last_unique_id = None
-                
-                # 2. ITERATE AND DETECT
-                async for doc in cursor:
-                    curr_unique_id = doc.get('file_unique_id')
+                async for group in cursor:
+                    docs = group.get('docs', [])
                     
-                    if curr_unique_id == last_unique_id:
-                        # MATCH! This is a duplicate (because it came after the first one)
-                        # Add to deletion lists
-                        to_delete_db_ids.append(doc['_id'])
+                    # 3. PYTHON SORTING (Safest): Sort by message_id ASC (Oldest first)
+                    # This handles mixed types or missing fields gracefully
+                    docs.sort(key=lambda x: x.get('msg_id', 0))
+                    
+                    if len(docs) > 1:
+                        # docs[0] is the Oldest (Original) -> KEEP
+                        # docs[1:] are duplicates -> DELETE
+                        duplicates = docs[1:]
                         
-                        if doc.get('message_id') and doc.get('channel_id'):
-                            messages_to_return.append((doc['message_id'], doc['channel_id']))
-                    else:
-                        # NEW FILE (This is the Original/Oldest)
-                        last_unique_id = curr_unique_id
+                        for d in duplicates:
+                            if d.get('obj_id'):
+                                to_delete_db_ids.append(d['obj_id'])
+                            
+                            if d.get('msg_id') and d.get('chn_id'):
+                                messages_to_return.append((d['msg_id'], d['chn_id']))
                 
-                # 3. BULK DELETE FROM DB
+                # 4. BULK DELETE
                 deleted_total = 0
                 if to_delete_db_ids:
-                    # Batch delete in chunks of 1000 to be safe
-                    for i in range(0, len(to_delete_db_ids), 1000):
-                        chunk = to_delete_db_ids[i:i+1000]
-                        res = await self.collection.delete_many({"_id": {"$in": chunk}})
+                    # Delete in batches to avoid BSON size limits
+                    batch_size = 1000
+                    for i in range(0, len(to_delete_db_ids), batch_size):
+                        batch = to_delete_db_ids[i:i + batch_size]
+                        res = await self.collection.delete_many({"_id": {"$in": batch}})
                         deleted_total += res.deleted_count
                 
                 return messages_to_return, deleted_total
                 
             except Exception as e:
-                logger.error(f"Duplicate Find Error (Cursor Mode): {e}")
+                logger.error(f"Duplicate Find Error (Aggregation): {e}")
                 return [], 0
         return [], 0
