@@ -1,5 +1,5 @@
 # neondb.py - Hybrid Database Wrapper (PostgreSQL + MongoDB)
-# Fixed for Render OOM (Memory Leaks) & Auth/SSL Errors
+# Fixed for Render OOM (Memory Leaks) & Duplicate Deletion Logic
 # PRODUCTION READY - DO NOT SHORTEN
 
 import logging
@@ -159,18 +159,20 @@ class NeonDB:
     async def _create_indexes_mongo(self):
         if self.collection is None: return
         try:
-            # --- FIX: DROP OLD UNIQUE INDEX ON file_unique_id ---
-            # Agar purana unique index hai to use hata denge taaki duplicates allow ho sakein
+            # --- CRITICAL FIX: Ensure file_unique_id is NOT UNIQUE ---
+            # We drop the index if it exists to recreate it correctly
             try:
-                await self.collection.drop_index("file_unique_id_1")
-                logger.info("♻️ Old unique index on file_unique_id dropped (Fixed for Duplicates).")
+                indexes = await self.collection.index_information()
+                if "file_unique_id_1" in indexes:
+                    await self.collection.drop_index("file_unique_id_1")
+                    logger.info("♻️ Refreshed index on file_unique_id (Allowed Duplicates).")
             except Exception:
-                pass # Index nahi tha ya naam alag tha, ignore karein
+                pass 
 
-            # Create normal index (Not Unique) on file_unique_id
+            # Create normal index (Not Unique) on file_unique_id so duplicates can be saved
             await self.collection.create_index("file_unique_id")
             
-            # Create UNIQUE index on message_id (Ek message do baar add na ho)
+            # Message ID MUST be unique to prevent saving the SAME message twice
             await self.collection.create_index("message_id", unique=True)
 
             await self.collection.create_index(
@@ -215,7 +217,6 @@ class NeonDB:
         clean_title = re.sub(r"[._\-]+", " ", title).strip() if title else ""
         
         if self.mode == "postgres" and self.pool:
-            # Postgres logic remains same (Assumes Unique ID constraint in Table)
             sql = """
             INSERT INTO videos (message_id, channel_id, file_id, file_unique_id, imdb_id, title, search_vector)
             VALUES ($1, $2, $3, $4, $5, $6, to_tsvector('english', $6 || ' ' || COALESCE($5, '')))
@@ -245,10 +246,8 @@ class NeonDB:
                 "title_lower": clean_title.lower() if clean_title else ""
             }
             try:
-                # --- FIX: KEY IS NOW MESSAGE_ID ---
-                # Pehle hum file_unique_id se check karte the (jisse duplicates overwrite ho jate the).
-                # Ab hum message_id se check karenge. Isse agar same file alag message me aati hai,
-                # to wo DB me nayi row banegi.
+                # --- LOGIC FIX: Save by MESSAGE_ID ---
+                # This ensures if you forward the same file 3 times, it creates 3 entries.
                 await self.collection.update_one(
                     {"message_id": message_id},
                     {"$set": doc},
@@ -393,7 +392,7 @@ class NeonDB:
                 bulk_ops = []
                 for m in chunk:
                     fid_unique = m.get('file_unique_id') or m.get('file_id')
-                    message_id = m.get('message_id') # Get Message ID
+                    message_id = m.get('message_id')
                     title = re.sub(r"[._\-]+", " ", m.get('title', '')).strip()
                     doc = {
                         "message_id": message_id,
@@ -404,8 +403,6 @@ class NeonDB:
                         "title": title,
                         "title_lower": title.lower()
                     }
-                    # --- FIX: Key on message_id instead of file_unique_id ---
-                    # Ensure each message is stored separately
                     bulk_ops.append(UpdateOne({"message_id": message_id}, {"$set": doc}, upsert=True))
                 
                 if bulk_ops:
@@ -418,7 +415,12 @@ class NeonDB:
         return total_synced
 
     async def find_and_delete_duplicates(self, batch_limit=100):
-        # MEMORY OPTIMIZATION: Use Cursors, do not load list into RAM
+        """
+        ADVANCED DUPLICATE REMOVER (Mongo Optimized):
+        1. Groups by 'file_unique_id'.
+        2. Sorts by 'message_id' (Ascending) -> Keep Oldest, Delete Newest.
+        3. Returns LIST of duplicates to delete from Telegram.
+        """
         if self.mode == "postgres" and self.pool:
             sql = """
             DELETE FROM videos a USING videos b
@@ -433,46 +435,56 @@ class NeonDB:
                 return [], 0
 
         elif self.mode == "mongo" and self.collection is not None:
+            # --- IMPROVED PIPELINE ---
             pipeline = [
+                # Step 1: Sort by message_id (ASC) ensures Oldest is First
+                {"$sort": {"message_id": 1}},
+                
+                # Step 2: Group by File Unique ID
                 {"$group": {
                     "_id": "$file_unique_id",
                     "count": {"$sum": 1},
-                    "ids": {"$push": "$message_id"}, # Push Message ID
-                    "obj_ids": {"$push": "$_id"} # Push Object ID for deletion
+                    # Push details into array (Already sorted due to Step 1)
+                    "docs": {"$push": {
+                        "obj_id": "$_id",
+                        "msg_id": "$message_id", 
+                        "chn_id": "$channel_id"
+                    }}
                 }},
+                
+                # Step 3: Filter where duplicates exist (>1)
                 {"$match": {"count": {"$gt": 1}}}
             ]
+            
             try:
-                # Use iterator to save memory
                 cursor = self.collection.aggregate(pipeline)
-                deleted_total = 0
-                messages_to_delete_info = [] # List of (message_id, channel_id)
                 
-                # We need channel ID to delete from telegram. 
-                # Assuming all duplicates are in same channel (usually true for single library channel)
-                # But safer to fetch.
+                ids_to_purge_db = []    # IDs to delete from MongoDB
+                msgs_to_purge_tg = []   # (msg_id, chat_id) to delete from Telegram
                 
                 async for group in cursor:
-                    # obj_ids[0] is kept, rest are deleted from DB
-                    # ids[0] is kept, rest are deleted from TG
+                    docs = group['docs']
                     
-                    ids_to_delete_db = group['obj_ids'][1:] 
-                    msg_ids_to_delete_tg = group['ids'][1:]
+                    # docs[0] is the OLDEST (Original) - KEEP IT.
+                    # docs[1:] are duplicates - DELETE THEM.
+                    duplicates = docs[1:] 
                     
-                    if ids_to_delete_db:
-                        # 1. Get Channel ID (Just fetch one doc from this group to know channel)
-                        sample_doc = await self.collection.find_one({"_id": ids_to_delete_db[0]}, {"channel_id": 1})
-                        channel_id = sample_doc.get("channel_id") if sample_doc else None
-
-                        if channel_id:
-                             for mid in msg_ids_to_delete_tg:
-                                 messages_to_delete_info.append((mid, channel_id))
+                    for item in duplicates:
+                        ids_to_purge_db.append(item['obj_id'])
                         
-                        # 2. Delete from DB
-                        res = await self.collection.delete_many({"_id": {"$in": ids_to_delete_db}})
-                        deleted_total += res.deleted_count
+                        # Only add to Telegram delete list if channel_id exists
+                        if item.get('msg_id') and item.get('chn_id'):
+                            msgs_to_purge_tg.append((item['msg_id'], item['chn_id']))
+                
+                # Step 4: Batch Delete from DB
+                deleted_total = 0
+                if ids_to_purge_db:
+                    # Delete in chunks if needed, but usually safe for <1000 items
+                    res = await self.collection.delete_many({"_id": {"$in": ids_to_purge_db}})
+                    deleted_total = res.deleted_count
                         
-                return messages_to_delete_info, deleted_total
+                return msgs_to_purge_tg, deleted_total
+                
             except Exception as e:
                 logger.error(f"Duplicate Find Error: {e}")
                 return [], 0
