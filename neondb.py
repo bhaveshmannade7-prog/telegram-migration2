@@ -1,5 +1,5 @@
 # neondb.py - Hybrid Database Wrapper (PostgreSQL + MongoDB)
-# Fixed: Duplicate Deletion Bug (Now deletes ALL duplicates, not just one)
+# Fixed: Guaranteed Duplicate Deletion (Even for 1 duplicate) & Caption Immunity
 # PRODUCTION READY - DO NOT SHORTEN
 
 import logging
@@ -159,16 +159,17 @@ class NeonDB:
     async def _create_indexes_mongo(self):
         if self.collection is None: return
         try:
-            # Drop old unique index if exists to allow duplicates initially
+            # 1. DROP old Unique Index if exists (Critical for allowing duplicates initially)
             try:
                 await self.collection.drop_index("file_unique_id_1")
             except Exception:
                 pass 
-
-            # Create normal index on file_unique_id (Allow Duplicates for detection)
+            
+            # 2. Create INDEXES
+            # Allow duplicates on file_unique_id (so we can find them later)
             await self.collection.create_index("file_unique_id")
             
-            # Message ID must be unique to prevent inserting same message twice
+            # Ensure message_id is unique (Prevent double entry of SAME message)
             await self.collection.create_index("message_id", unique=True)
 
             await self.collection.create_index(
@@ -242,7 +243,7 @@ class NeonDB:
                 "title_lower": clean_title.lower() if clean_title else ""
             }
             try:
-                # Key on message_id to allow multiple files with same unique_id (duplicates)
+                # Upsert based on Message ID (Ensures we can have multiple files with same unique_id but different msg_id)
                 await self.collection.update_one(
                     {"message_id": message_id},
                     {"$set": doc},
@@ -410,15 +411,12 @@ class NeonDB:
 
     async def find_and_delete_duplicates(self, batch_limit=100):
         """
-        NEW ROBUST LOGIC:
-        1. Sorts by Message ID (Oldest first).
-        2. Groups by File Unique ID.
-        3. Collects ALL duplicates (indices 1 to N).
-        4. Deletes from DB in bulk.
-        5. Returns list for Telegram deletion.
+        ADVANCED DUPLICATE CLEANER V2:
+        1. Works even if only 1 duplicate exists (Total 2 files).
+        2. Caption Immune: Uses file_unique_id which stays same even if caption edits.
+        3. Strict Sorting: Keeps oldest Message ID, Deletes all newer copies.
         """
         if self.mode == "postgres" and self.pool:
-            # Postgres handles strict unique constraints, so simple query works
             sql = """
             DELETE FROM videos a USING videos b
             WHERE a.id > b.id AND a.file_unique_id = b.file_unique_id
@@ -433,49 +431,50 @@ class NeonDB:
 
         elif self.mode == "mongo" and self.collection is not None:
             pipeline = [
-                # 1. Sort by message_id ASC to ensure we keep the oldest (original) one
-                {"$sort": {"message_id": 1}},
-                
-                # 2. Group by unique key
+                # 1. Group by file_unique_id (Ignore caption changes)
                 {"$group": {
                     "_id": "$file_unique_id",
                     "count": {"$sum": 1},
-                    "all_docs": {
+                    # Push ALL details to array
+                    "docs": {
                         "$push": {
                             "msg_id": "$message_id",
                             "chn_id": "$channel_id",
-                            "obj_id": "$_id"
+                            "oid": "$_id"
                         }
                     }
                 }},
                 
-                # 3. Only take groups having duplicates
+                # 2. Strict Filter: If count > 1, it IS a duplicate pair
                 {"$match": {"count": {"$gt": 1}}}
             ]
             
             try:
-                # Run Pipeline
                 cursor = self.collection.aggregate(pipeline)
                 
                 to_delete_db_ids = []
                 messages_to_return = []
                 
                 async for group in cursor:
-                    docs = group.get('all_docs', [])
+                    docs = group.get('docs', [])
                     if len(docs) > 1:
-                        # Keep docs[0] (Original), Delete docs[1:] (Duplicates)
+                        # PYTHON SORTING (Most Reliable)
+                        # Sort by Message ID Ascending (Oldest -> Newest)
+                        # Assumes smaller message_id = uploaded earlier
+                        docs.sort(key=lambda x: x['msg_id'] if x['msg_id'] is not None else float('inf'))
+                        
+                        # Keep docs[0] (The Original)
+                        # Mark docs[1:] (The Duplicates) for deletion
                         duplicates = docs[1:]
                         
                         for d in duplicates:
-                            # Add to DB deletion list
-                            if d.get('obj_id'):
-                                to_delete_db_ids.append(d['obj_id'])
+                            if d.get('oid'):
+                                to_delete_db_ids.append(d['oid'])
                             
-                            # Add to Telegram deletion list
                             if d.get('msg_id') and d.get('chn_id'):
                                 messages_to_return.append((d['msg_id'], d['chn_id']))
                 
-                # Perform Bulk DB Deletion
+                # Bulk Delete from Database
                 deleted_total = 0
                 if to_delete_db_ids:
                     res = await self.collection.delete_many({"_id": {"$in": to_delete_db_ids}})
