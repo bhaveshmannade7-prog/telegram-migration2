@@ -564,16 +564,17 @@ def get_join_keyboard(pending_action: str = "") -> InlineKeyboardMarkup | None:
     if USER_GROUP_USERNAME: row1.append(get_btn(USER_GROUP_USERNAME, "Group"))
     if row1: buttons.append(row1)
 
-    # Row 2: Extras
+        # Row 2: Extras
     row2 = []
     if EXTRA_CHANNEL_1: row2.append(get_btn(EXTRA_CHANNEL_1, "Backup 1"))
     if EXTRA_CHANNEL_2: row2.append(get_btn(EXTRA_CHANNEL_2, "Backup 2"))
     if row2: buttons.append(row2)
 
-        if buttons: 
+    if buttons: 
         cb_data = f"check_join|{pending_action}" if pending_action else "check_join"
         buttons.append([InlineKeyboardButton(text="✅ Verify Membership", callback_data=cb_data)])
         return InlineKeyboardMarkup(inline_keyboard=buttons)
+        
     return None
 
 def get_full_limit_keyboard() -> InlineKeyboardMarkup | None:
