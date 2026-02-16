@@ -1559,7 +1559,7 @@ async def start_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Da
 @dp.callback_query(F.data.startswith("check_join"))
 @handler_timeout(20)
 async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Database, db_fallback: Database, redis_cache: RedisCacheLayer):
-    user = callback.fromuser if hasattr(callback, 'from_user') else callback.from_user
+    user = callback.from_user
     if not user: return await safe_tg_call(callback.answer("Error: User not found."))
 
     # is_user_banned is an async method in database.py
