@@ -1297,17 +1297,24 @@ async def cancel_handler(message: types.Message, state: FSMContext):
 async def banned_start_command_stub(message: types.Message):
     pass
 
-# UI Enhancement & CRITICAL BUG FIX (The logic that caused /stats to trigger /start for admin is removed)
+# UI Enhancement & CRITICAL BUG FIX 
 @dp.message(CommandStart())
 @handler_timeout(15)
 async def start_command(message: types.Message, bot: Bot, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
     user = message.from_user
     if not user: return
     user_id = user.id
-        # FIX: Security Check for Banned Users
+    
+    # --- FIX: Security Check for Banned Users ---
     is_banned = await safe_db_call(db_primary.is_user_banned(user_id), default=False)
     if is_banned and user_id != ADMIN_USER_ID:
-        await message.answer("🚫 **Access Denied**: You are banned.")
+        ban_text = (
+            "🚫 **ACCESS DENIED / एक्सेस रद्द**\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "🇺🇸 You are banned from using this bot.\n"
+            "🇮🇳 Aapko is bot ka use karne se ban kar diya gaya hai. Kripya Admin se sampark karein."
+        )
+        await message.answer(ban_text)
         return
 
     args = message.text.split()
@@ -1317,10 +1324,10 @@ async def start_command(message: types.Message, bot: Bot, db_primary: Database, 
         # Format: /start get_tt12345
         imdb_id = args[1].replace("get_", "")
         
-        # Artificial Callback create karke existing logic use karenge (Don't Repeat Yourself)
-        # Fake Callback object banayenge
+        # Artificial Callback create karke existing logic use karenge
+        import uuid
         fake_callback = types.CallbackQuery(
-            id='0', 
+            id=str(uuid.uuid4()), # Safe Unique ID
             from_user=user, 
             chat_instance='0', 
             message=message, 
@@ -1333,10 +1340,19 @@ async def start_command(message: types.Message, bot: Bot, db_primary: Database, 
     # --- FEATURE B: MONETIZATION TOKEN CATCH ---
     if len(args) > 1 and args[1].startswith("unlock_"):
         token = args[1].split("_")[1]
-        # ... (baaki same rahega) ...
+        # User ne ad/shortlink dekh liya hai, usko 24 hours (86400s) ke liye free access do
+        if redis_cache.is_ready():
+            await redis_cache.set(f"sl_pass:{user_id}", "true", ttl=86400)
+            unlock_text = (
+                "✅ **UNLOCKED / अनलॉक हो गया**\n"
+                "━━━━━━━━━━━━━━━━━━━\n"
+                "🇺🇸 Unlimited downloads are unlocked for 24 hours!\n"
+                "🇮🇳 Agle 24 ghante ke liye unlimited downloads unlock ho gaye hain! Ab aap koi bhi movie direct download kar sakte hain."
+            )
+            await safe_tg_call(message.answer(unlock_text), semaphore=TELEGRAM_COPY_SEMAPHORE)
+        # Token verify karne ke baad user ko normal start screen dikhayenge
 
-
-        # --- ADMIN WELCOME LOGIC (NEW) ---
+    # --- ADMIN WELCOME LOGIC ---
     if user_id == ADMIN_USER_ID:
         admin_text = (
             f"🕶️ **SYSTEM COMMAND CENTER**\n"
@@ -1350,36 +1366,37 @@ async def start_command(message: types.Message, bot: Bot, db_primary: Database, 
         admin_kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📊 Open Live Dashboard", callback_data="admin_stats_cmd")]
         ])
-        # FIX: Indentation correct kiya hai (return hata diya hai)
         await safe_tg_call(message.answer(admin_text, reply_markup=admin_kb), semaphore=TELEGRAM_COPY_SEMAPHORE)
     # --- END ADMIN WELCOME LOGIC ---
 
-    if not await ensure_capacity_or_inform(message, db_primary, bot, redis_cache):
-        if not await ensure_capacity_or_inform(message, db_primary, bot, redis_cache):
+    # MAGIC FIX: Capacity check proper kiya gaya taaki Indentation Error na aaye
+    capacity_ok = await ensure_capacity_or_inform(message, db_primary, bot, redis_cache)
+    if not capacity_ok:
         return
         
     is_member = await check_user_membership(user.id, bot)
-    if not is_member:
-        join_markup = get_join_keyboard()
+    join_markup = get_join_keyboard()
     
     if is_member:
-        # UI Enhancement: Cinematic Welcome Banner (Start UI)
+        # UI Enhancement: Cinematic Welcome Banner BILINGUAL
         welcome_text = (
             f"🎬 **THE CINEMATIC ARCHIVE** 🍿\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"👋 Welcome back, <b>{user.first_name}</b>.\n"
+            f"🇺🇸 **Welcome back, {user.first_name}!**\n"
             f"Your gateway to the ultimate movie collection is active.\n\n"
-            f"📥 **HOW TO SEARCH**\n"
+            f"📥 **HOW TO SEARCH:**\n"
             f"Simply type the **Movie Name** below.\n"
-            f"• <i>Example:</i> <code>Avengers</code>\n"
-            f"• <i>Smart Search:</i> Typos are auto-corrected.\n\n"
-            f"🚀 **Ready? Start typing...**"
+            f"• *Example:* `Avengers`\n\n"
+            f"🇮🇳 **वापसी पर स्वागत है, {user.first_name}!**\n"
+            f"Movie search karne ke liye bas niche **Movie ka naam** likhein.\n"
+            f"• *Udaharan:* `Avengers`\n\n"
+            f"🚀 **Ready? Start typing... / नाम लिखकर सर्च करें👇**"
         )
         
         # UI Enhancement: App-like main menu buttons
         main_menu = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="💡 Search Tips & Tricks", callback_data="help_cmd"),
+                InlineKeyboardButton(text="💡 Search Tips / कैसे खोजें?", callback_data="help_cmd"),
             ],
             [
                 InlineKeyboardButton(text="📢 Official Channel", url=f"https://t.me/{JOIN_CHANNEL_USERNAME}" if JOIN_CHANNEL_USERNAME else "https://t.me/telegram"),
@@ -1389,22 +1406,21 @@ async def start_command(message: types.Message, bot: Bot, db_primary: Database, 
         
         await safe_tg_call(message.answer(welcome_text, reply_markup=main_menu), semaphore=TELEGRAM_COPY_SEMAPHORE)
     else:
-        # UI Enhancement: Join Check Screen Text
+        # UI Enhancement: Join Check Screen Text BILINGUAL
         welcome_text = (
             f"🔒 **ACCESS LOCKED / एक्सेस बंद है**\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
             f"🇺🇸 You cannot search or watch movies without joining our channels.\n"
-            f"🇮🇳 आप हमारे चैनल ज्वाइन किए बिना मूवी सर्च या डाउनलोड नहीं कर सकते।\n\n"
+            f"🇮🇳 Movie search aur download karne ke liye niche diye gaye sabhi channels join karna jaruri hai.\n\n"
             f"👇 **Steps to Unlock / कैसे खोलें:**\n"
             f"1️⃣ Join all channels below (सारे चैनल ज्वाइन करें)\n"
-            f"2️⃣ Tap **Verify Membership** (वेरीफाई बटन दबाएं)"
+            f"2️⃣ Tap **Verify Membership** (Verify बटन दबाएं)"
         )
         if join_markup:
             await safe_tg_call(message.answer(welcome_text, reply_markup=join_markup), semaphore=TELEGRAM_COPY_SEMAPHORE)
         else:
             logger.error("User ne start kiya par koi JOIN_CHANNEL/GROUP set nahi hai.")
             await safe_tg_call(message.answer("⚠️ Configuration Error: Please contact Admin."), semaphore=TELEGRAM_COPY_SEMAPHORE)
-
 
 
 @dp.message(Command("help"), BannedFilter())
