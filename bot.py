@@ -1355,11 +1355,12 @@ async def start_command(message: types.Message, bot: Bot, db_primary: Database, 
     # --- END ADMIN WELCOME LOGIC ---
 
     if not await ensure_capacity_or_inform(message, db_primary, bot, redis_cache):
+        if not await ensure_capacity_or_inform(message, db_primary, bot, redis_cache):
         return
         
-        is_member = await check_user_membership(user.id, bot)
+    is_member = await check_user_membership(user.id, bot)
     if not is_member:
-        join_markup = get_join_keyboard(pending_action=callback.data)
+        join_markup = get_join_keyboard()
     
     if is_member:
         # UI Enhancement: Cinematic Welcome Banner (Start UI)
