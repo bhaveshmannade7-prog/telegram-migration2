@@ -1557,7 +1557,9 @@ async def start_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Da
 
 @dp.callback_query(F.data == "check_join")
 @handler_timeout(20)
-async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Database, redis_cache: RedisCacheLayer):
+@dp.callback_query(F.data.startswith("check_join"))
+@handler_timeout(20)
+async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Database, db_fallback: Database, redis_cache: RedisCacheLayer):
     user = callback.from_user
     if not user: return await safe_tg_call(callback.answer("Error: User not found."))
 
@@ -1574,7 +1576,14 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
 
     is_member = await check_user_membership(user.id, bot)
     
-    if is_member:
+        if is_member:
+        # Agar koi pending movie click thi, to direct movie de do
+        if "|" in callback.data:
+            pending_action = callback.data.split("|")[1]
+            if pending_action.startswith("get_"):
+                callback.data = pending_action # Update data
+                return await get_movie_callback(callback, bot, db_primary, db_fallback, redis_cache)
+
         # get_concurrent_user_count is an async method in database.py
         active_users = await safe_db_call(db_primary.get_concurrent_user_count(ACTIVE_WINDOW_MINUTES), default=0)
         # UI Enhancement: Success message
