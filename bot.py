@@ -2024,10 +2024,10 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
         
     await safe_tg_call(callback.answer("📥 Retrieving Content..."))
     
-    # --- Join Check (BILINGUAL) ---
+        # --- Join Check (BILINGUAL) ---
     is_member = await check_user_membership(user.id, bot)
     if not is_member:
-        join_markup = get_join_keyboard()
+        join_markup = get_join_keyboard(pending_action=callback.data)
         if join_markup:
             # Agar member nahi hai, toh wahi message edit karke join button dikhao
             join_text = (
