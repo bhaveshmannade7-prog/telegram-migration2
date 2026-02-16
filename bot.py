@@ -1571,7 +1571,7 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
     await safe_tg_call(callback.answer("Verifying Membership... 🔄"))
     
     if not await ensure_capacity_or_inform(callback, db_primary, bot, redis_cache):
-        return
+         return
 
     is_member = await check_user_membership(user.id, bot)
     
