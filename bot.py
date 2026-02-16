@@ -1560,7 +1560,9 @@ async def start_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Da
 @handler_timeout(20)
 async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Database, db_fallback: Database, redis_cache: RedisCacheLayer):
     user = callback.from_user
-    if not user: return await safe_tg_call(callback.answer("Error: User not found."))
+    if not user:
+        await safe_tg_call(callback.answer("Error: User not found."))
+        return
 
     # is_user_banned is an async method in database.py
     is_banned = await safe_db_call(db_primary.is_user_banned(user.id), default=False)
@@ -1570,8 +1572,10 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
         
     await safe_tg_call(callback.answer("Verifying Membership... 🔄"))
     
-    # MAGIC FIX: Return ko same line par rakha hai taaki space error na aaye
-    if not await ensure_capacity_or_inform(callback, db_primary, bot, redis_cache): return
+    # MAGIC FIX: Capacity check ko alag variable me daal diya taaki Indentation error na aaye
+    capacity_ok = await ensure_capacity_or_inform(callback, db_primary, bot, redis_cache)
+    if not capacity_ok:
+        return
 
     is_member = await check_user_membership(user.id, bot)
     
@@ -1583,7 +1587,7 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
             pending_action = callback.data.split("|")[1]
             if pending_action.startswith("get_"):
                 callback.data = pending_action # Data update kiya movie nikalne ke liye
-                # Pehle movie bhejo (Ye apna verify message screen se hata dega)
+                # Pehle movie bhejo
                 await get_movie_callback(callback, bot, db_primary, db_fallback, redis_cache)
                 movie_sent = True
 
@@ -1607,7 +1611,7 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
         ])
         
         if movie_sent:
-            # Agar movie send ho chuki hai, to welcome message naya bhej do (kyunki verify msg delete ho chuka hai)
+            # Agar movie send ho chuki hai, to welcome message naya bhej do
             await safe_tg_call(bot.send_message(user.id, success_text, reply_markup=main_menu), semaphore=TELEGRAM_COPY_SEMAPHORE)
         else:
             # Agar normal Verify dabaya tha bina kisi movie link ke, to usi message ko edit kardo
@@ -1624,8 +1628,6 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
         if callback.message and (not callback.message.reply_markup or not callback.message.reply_markup.inline_keyboard):
              if callback.message.text and join_markup:
                  await safe_tg_call(callback.message.edit_reply_markup(reply_markup=join_markup))
-        
-
             
 @dp.callback_query(F.data == "no_url_join")
 @handler_timeout(5)
