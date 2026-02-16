@@ -1570,8 +1570,8 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
         
     await safe_tg_call(callback.answer("Verifying Membership... 🔄"))
     
-    if not await ensure_capacity_or_inform(callback, db_primary, bot, redis_cache):
-        return
+    # MAGIC FIX: Return ko same line par rakha hai taaki space error na aaye
+    if not await ensure_capacity_or_inform(callback, db_primary, bot, redis_cache): return
 
     is_member = await check_user_membership(user.id, bot)
     
@@ -1623,7 +1623,9 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
         join_markup = get_join_keyboard(pending_action=pending_act)
         if callback.message and (not callback.message.reply_markup or not callback.message.reply_markup.inline_keyboard):
              if callback.message.text and join_markup:
-                 await safe_tg_call(callback.message.edit_reply_markup(reply_markup=join_markup)) 
+                 await safe_tg_call(callback.message.edit_reply_markup(reply_markup=join_markup))
+        
+
             
 @dp.callback_query(F.data == "no_url_join")
 @handler_timeout(5)
