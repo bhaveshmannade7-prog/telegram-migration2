@@ -1558,7 +1558,7 @@ async def start_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Da
 @dp.callback_query(F.data.startswith("check_join"))
 @handler_timeout(20)
 async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Database, db_fallback: Database, redis_cache: RedisCacheLayer):
-    user = callback.from_user
+    user = callback.fromuser if hasattr(callback, 'from_user') else callback.from_user
     if not user: return await safe_tg_call(callback.answer("Error: User not found."))
 
     # is_user_banned is an async method in database.py
@@ -1575,16 +1575,21 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
     is_member = await check_user_membership(user.id, bot)
     
     if is_member:
-        # Agar koi pending movie click thi, to direct movie de do
+        movie_sent = False
+        
+        # MAGIC: Agar koi pending movie click thi, to direct movie de do pehle
         if "|" in callback.data:
             pending_action = callback.data.split("|")[1]
             if pending_action.startswith("get_"):
-                callback.data = pending_action # Update data
-                return await get_movie_callback(callback, bot, db_primary, db_fallback, redis_cache)
+                callback.data = pending_action # Data update kiya movie nikalne ke liye
+                # Pehle movie bhejo (Ye apna verify message screen se hata dega)
+                await get_movie_callback(callback, bot, db_primary, db_fallback, redis_cache)
+                movie_sent = True
 
         # get_concurrent_user_count is an async method in database.py
         active_users = await safe_db_call(db_primary.get_concurrent_user_count(ACTIVE_WINDOW_MINUTES), default=0)
-        # UI Enhancement: Success message
+        
+        # UI Enhancement: Success message (Welcome wali)
         success_text = (
             f"✅ **VERIFICATION COMPLETE**\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
@@ -1594,29 +1599,31 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
             f"<i>Live Traffic: {active_users}/{CURRENT_CONC_LIMIT} Users</i>"
         )
         
-        # Re-display main menu for convenience
         main_menu = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="💡 Search Tips & Tricks", callback_data="help_cmd"),
-            ],
-            [
-                InlineKeyboardButton(text="📢 Official Channel", url=f"https://t.me/{JOIN_CHANNEL_USERNAME}" if JOIN_CHANNEL_USERNAME else "https://t.me/telegram"),
-                InlineKeyboardButton(text="🆘 Support Hub", callback_data="support_cmd"),
-            ]
+            [InlineKeyboardButton(text="💡 Search Tips & Tricks", callback_data="help_cmd")],
+            [InlineKeyboardButton(text="📢 Official Channel", url=f"https://t.me/{JOIN_CHANNEL_USERNAME}" if JOIN_CHANNEL_USERNAME else "https://t.me/telegram"),
+             InlineKeyboardButton(text="🆘 Support Hub", callback_data="support_cmd")]
         ])
         
-        try:
-            await safe_tg_call(callback.message.edit_text(success_text, reply_markup=main_menu))
-        except Exception:
+        if movie_sent:
+            # Agar movie send ho chuki hai, to welcome message naya bhej do (kyunki verify msg delete ho chuka hai)
             await safe_tg_call(bot.send_message(user.id, success_text, reply_markup=main_menu), semaphore=TELEGRAM_COPY_SEMAPHORE)
+        else:
+            # Agar normal Verify dabaya tha bina kisi movie link ke, to usi message ko edit kardo
+            try:
+                await safe_tg_call(callback.message.edit_text(success_text, reply_markup=main_menu))
+            except Exception:
+                await safe_tg_call(bot.send_message(user.id, success_text, reply_markup=main_menu), semaphore=TELEGRAM_COPY_SEMAPHORE)
     else:
         # UI Enhancement: Failure message
         await safe_tg_call(callback.answer("❌ Verification Failed: Please join all required channels first.", show_alert=True))
-        join_markup = get_join_keyboard()
+        
+        pending_act = callback.data.split("|")[1] if "|" in callback.data else ""
+        join_markup = get_join_keyboard(pending_action=pending_act)
         if callback.message and (not callback.message.reply_markup or not callback.message.reply_markup.inline_keyboard):
              if callback.message.text and join_markup:
                  await safe_tg_call(callback.message.edit_reply_markup(reply_markup=join_markup))
-
+            
 @dp.callback_query(F.data == "no_url_join")
 @handler_timeout(5)
 async def no_url_join_callback(callback: types.CallbackQuery):
