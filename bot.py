@@ -545,7 +545,7 @@ async def check_user_membership(user_id: int, current_bot: Bot) -> bool:
         return False
 
 # UI Enhancement: Redesign get_join_keyboard (Supports 4 Channels)
-def get_join_keyboard() -> InlineKeyboardMarkup | None:
+def get_join_keyboard(pending_action: str = "") -> InlineKeyboardMarkup | None:
     buttons = []
     
     def get_btn(identifier, label_suffix):
@@ -570,8 +570,9 @@ def get_join_keyboard() -> InlineKeyboardMarkup | None:
     if EXTRA_CHANNEL_2: row2.append(get_btn(EXTRA_CHANNEL_2, "Backup 2"))
     if row2: buttons.append(row2)
 
-    if buttons: 
-        buttons.append([InlineKeyboardButton(text="✅ Verify Membership", callback_data="check_join")])
+        if buttons: 
+        cb_data = f"check_join|{pending_action}" if pending_action else "check_join"
+        buttons.append([InlineKeyboardButton(text="✅ Verify Membership", callback_data=cb_data)])
         return InlineKeyboardMarkup(inline_keyboard=buttons)
     return None
 
