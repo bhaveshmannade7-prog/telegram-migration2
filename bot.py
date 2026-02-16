@@ -1556,8 +1556,6 @@ async def start_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Da
             except Exception:
                 await safe_tg_call(bot.send_message(user.id, welcome_text, reply_markup=join_markup), semaphore=TELEGRAM_COPY_SEMAPHORE)
 
-@dp.callback_query(F.data == "check_join")
-@handler_timeout(20)
 @dp.callback_query(F.data.startswith("check_join"))
 @handler_timeout(20)
 async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primary: Database, db_fallback: Database, redis_cache: RedisCacheLayer):
@@ -1577,7 +1575,7 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
 
     is_member = await check_user_membership(user.id, bot)
     
-        if is_member:
+    if is_member:
         # Agar koi pending movie click thi, to direct movie de do
         if "|" in callback.data:
             pending_action = callback.data.split("|")[1]
