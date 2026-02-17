@@ -6,6 +6,7 @@ import logging
 import re
 import io
 import signal
+import aiohttp
 import json
 import hashlib
 import random 
@@ -650,25 +651,16 @@ def get_quality_label(filename: str) -> str:
     if "480" in f: return "📱 480p SD"
     if "2160" in f or "4k" in f: return "🌟 4K UHD"
     return "🎬 Watch Now"
-def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
+    
+async def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    ULTIMATE BANNER ENGINE V17 (LEGENDARY STUDIO BUILD)
-    ---------------------------------------------------
-    STATUS: PRODUCTION READY (Anti-Indentation Error Fix)
-    FEATURE: 100% Banner Guarantee. Even default images get styled.
-    LOGIC: OMDb (Primary) -> Bing (Backup) -> Styled Default (Final).
+    ULTIMATE BANNER ENGINE V17 (ASYNC VERSION - NO FREEZE)
     """
     import urllib.parse
     import re
-    import requests
 
-    # --- CONFIGURATION (Legendary Mode) ---
-    # Netflix-style Dark Background Color
     BG_COLOR = "0d0d0d" 
-    # High-Res Default Placeholder (Used if everything fails)
     DEFAULT_RAW = "https://i.ibb.co/9p43Y4k/default-movie.jpg"
-    
-    # Fake Browser Headers (To bypass 403 blocks)
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
@@ -676,50 +668,38 @@ def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     raw_url = None
     omdb_key = "19f1d07c"
 
-    # --- LEVEL 1: OMDb API (Precision Targeting) ---
-    if imdb_id and imdb_id.startswith("tt") and imdb_id[2:].isdigit():
-        try:
-            target_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
-            # Stream verify: Check if image exists without downloading the whole body
-            with requests.get(target_url, headers=HEADERS, stream=True, timeout=1.5) as r:
-                if r.status_code == 200 and 'image' in r.headers.get('content-type', '').lower():
-                    raw_url = target_url
-        except Exception:
-            pass # Silent fail to trigger fallback
+    try:
+        # aiohttp use kar rahe hain taaki bot hang na ho
+        async with aiohttp.ClientSession() as session:
+            # LEVEL 1: OMDb API
+            if imdb_id and imdb_id.startswith("tt") and imdb_id[2:].isdigit():
+                target_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
+                try:
+                    async with session.get(target_url, headers=HEADERS, timeout=1.5) as r:
+                        if r.status == 200 and 'image' in r.headers.get('content-type', '').lower():
+                            raw_url = target_url
+                except Exception:
+                    pass
 
-    # --- LEVEL 2: INTELLIGENT SEARCH (If OMDb Fails) ---
-    if not raw_url:
-        try:
-            clean_title = re.sub(r"[^a-zA-Z0-9\s]", "", title).strip()
-            if clean_title:
-                # Search Logic: Prioritize "Vertical" and "High Resolution"
-                if year and year.isdigit():
-                    query = f'movie poster "{clean_title}" {year} official vertical'
-                else:
-                    query = f'movie poster "{clean_title}" official vertical'
+            # LEVEL 2: INTELLIGENT SEARCH (Bing)
+            if not raw_url:
+                clean_title = re.sub(r"[^a-zA-Z0-9\s]", "", title).strip()
+                if clean_title:
+                    query = f'movie poster "{clean_title}" {year} official vertical' if year and year.isdigit() else f'movie poster "{clean_title}" official vertical'
+                    safe_query = urllib.parse.quote(query)
+                    bing_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=600&rs=1"
+                    try:
+                        async with session.get(bing_url, headers=HEADERS, timeout=1.5) as r:
+                            if r.status == 200:
+                                raw_url = bing_url
+                    except Exception:
+                        pass
+    except Exception as e:
+        logger.error(f"Poster Fetch Error: {e}")
 
-                safe_query = urllib.parse.quote(query)
-                bing_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=600&rs=1"
-                
-                # Validation: Verify Bing result is reachable
-                with requests.get(bing_url, headers=HEADERS, stream=True, timeout=1.5) as r:
-                    if r.status_code == 200:
-                        raw_url = bing_url
-        except Exception:
-            pass
-
-    # --- LEVEL 3: THE PROFESSIONAL FINISH (Universal Styler) ---
-    # Agar URL nahi mila, to Default Image use karo
     final_source = raw_url if raw_url else DEFAULT_RAW
-    
-    # Safe Encoding
     safe_raw = urllib.parse.quote(final_source)
 
-    # LEGENDARY PARAMETERS:
-    # 1. fit=contain: Image kabhi nahi kategi.
-    # 2. w=1000&h=500: Telegram Banner Standard.
-    # 3. cbg=...: Missing space ko dark color se fill karega (Professional look).
-    # 4. output=webp: Fast loading.
     return f"https://wsrv.nl/?url={safe_raw}&w=1000&h=500&fit=contain&a=center&cbg={BG_COLOR}&output=webp"
 
 # UI Enhancement: Overflow message redesigned
