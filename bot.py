@@ -2944,7 +2944,7 @@ async def import_json_command(message: types.Message, db_primary: Database, db_f
             await safe_tg_call(msg.edit_text("❌ **File Too Large**: Max limit is 30MB for JSON imports."))
             return
         # --- FIX END ---
-
+                loop = asyncio.get_running_loop() # <-- YE LINE ADD KARO
         # JSON parsing is CPU bound, run in executor
         mlist = await loop.run_in_executor(executor, lambda: json.loads(fio.read().decode('utf-8')))
 
