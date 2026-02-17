@@ -1588,7 +1588,6 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
         
     await safe_tg_call(callback.answer("Verifying Membership... 🔄"))
     
-    # MAGIC FIX: Capacity check ko alag variable me daal diya taaki Indentation error na aaye
     capacity_ok = await ensure_capacity_or_inform(callback, db_primary, bot, redis_cache)
     if not capacity_ok:
         return
@@ -1602,26 +1601,36 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
         if "|" in callback.data:
             pending_action = callback.data.split("|")[1]
             if pending_action.startswith("get_"):
-                callback.data = pending_action # Data update kiya movie nikalne ke liye
-                # Pehle movie bhejo
-                await get_movie_callback(callback, bot, db_primary, db_fallback, redis_cache)
+                # CRITICAL FIX: Pydantic errors se bachne ke liye naya Fake Callback banaya
+                import uuid
+                fake_callback = types.CallbackQuery(
+                    id=str(uuid.uuid4()),
+                    from_user=user,
+                    chat_instance=callback.chat_instance or '0',
+                    message=callback.message,
+                    data=pending_action
+                )
+                # Pehle movie bhejo (Ye 100% movie trigger karega)
+                await get_movie_callback(fake_callback, bot, db_primary, db_fallback, redis_cache)
                 movie_sent = True
 
         # get_concurrent_user_count is an async method in database.py
         active_users = await safe_db_call(db_primary.get_concurrent_user_count(ACTIVE_WINDOW_MINUTES), default=0)
         
-        # UI Enhancement: Success message (Welcome wali)
+        # UI Enhancement: Success message (BILINGUAL)
         success_text = (
             f"✅ **VERIFICATION COMPLETE**\n"
             f"━━━━━━━━━━━━━━━━━━━\n"
-            f"Access Granted. Welcome, <b>{user.first_name}</b>!\n\n"
+            f"🇺🇸 Access Granted. Welcome, **{user.first_name}**!\n\n"
             f"🔍 **Start Searching Now**\n"
-            f"Type any movie title to begin.\n"
+            f"Type any movie title to begin.\n\n"
+            f"🇮🇳 चैनल ज्वाइन करने के लिए धन्यवाद!\n"
+            f"अब आप कोई भी मूवी का नाम लिखकर सर्च कर सकते हैं।\n\n"
             f"<i>Live Traffic: {active_users}/{CURRENT_CONC_LIMIT} Users</i>"
         )
         
         main_menu = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💡 Search Tips & Tricks", callback_data="help_cmd")],
+            [InlineKeyboardButton(text="💡 Search Tips / कैसे खोजें?", callback_data="help_cmd")],
             [InlineKeyboardButton(text="📢 Official Channel", url=f"https://t.me/{JOIN_CHANNEL_USERNAME}" if JOIN_CHANNEL_USERNAME else "https://t.me/telegram"),
              InlineKeyboardButton(text="🆘 Support Hub", callback_data="support_cmd")]
         ])
@@ -1644,7 +1653,7 @@ async def check_join_callback(callback: types.CallbackQuery, bot: Bot, db_primar
         if callback.message and (not callback.message.reply_markup or not callback.message.reply_markup.inline_keyboard):
              if callback.message.text and join_markup:
                  await safe_tg_call(callback.message.edit_reply_markup(reply_markup=join_markup))
-            
+        
 @dp.callback_query(F.data == "no_url_join")
 @handler_timeout(5)
 async def no_url_join_callback(callback: types.CallbackQuery):
