@@ -2380,97 +2380,38 @@ async def auto_index_handler(message: types.Message, db_primary: Database, db_fa
             logger.info(f"{log_prefix} New Movie Added & Cached.")
     
     asyncio.create_task(run_tasks())
-@dp.message(Command("stats"), AdminFilter())
-@handler_timeout(20)
 # =======================================================
-# +++++ FIX: ADMIN DASHBOARD (HTML PARSING FIXED) +++++
+# +++++ FIX: ULTIMATE ADMIN DASHBOARD (CLEANED) +++++
 # =======================================================
 
 @dp.message(Command("stats"), AdminFilter())
-@handler_timeout(20)
+@handler_timeout(30)
 async def stats_command(message: types.Message, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    # UI: Working state
-    loading_msg = await safe_tg_call(message.answer("📊 *Analysing System Metrics...*"), semaphore=TELEGRAM_COPY_SEMAPHORE)
+    loading_msg = await safe_tg_call(message.answer("🔄 <b>Fetching Server Metrics...</b>", parse_mode=ParseMode.HTML), semaphore=TELEGRAM_COPY_SEMAPHORE)
     if not loading_msg: return
 
     try:
-        # Generate Dashboard using the central function
         text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        await safe_tg_call(loading_msg.edit_text(text, reply_markup=reply_markup))
+        await safe_tg_call(loading_msg.edit_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML))
     except Exception as e:
-        logger.error(f"Stats generation failed: {e}")
-        # Fallback to plain text if HTML fails
-        await safe_tg_call(loading_msg.edit_text(f"❌ *Stats Error*: {str(e)[:100]}"))
-
-# --- REPLACEMENT FOR admin_stats_callback (HTML FIX + ROBUST ERROR HANDLING) ---
-@dp.callback_query(F.data == "admin_stats_cmd", AdminFilter())
-@handler_timeout(25)
-async def admin_stats_callback(callback: types.CallbackQuery, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    try:
-        # Generate NEW data
-        text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        
-        # Try to EDIT the message
-        result = await safe_tg_call(callback.message.edit_text(text, reply_markup=reply_markup))
-        
-        if result:
-            # Successfully updated
-            pass
-        else:
-            # Result is None logic check:
-            # Agar 'MessageNotModified' error hai, to 'Up to date' dikhao
-            # Lekin agar HTML parsing error hai, to wo bhi None deta hai safe_tg_call me
-            # Isliye hum user ko feedback denge
-            await safe_tg_call(callback.answer("✅ Dashboard Refreshed (No Changes)", show_alert=False))
-            
-    except Exception as e:
-        logger.error(f"Stats callback critical fail: {e}")
-        await safe_tg_call(callback.answer("❌ Error Loading Stats", show_alert=True))
-
-# =======================================================
-# +++++ FIX: ULTIMATE ADMIN DASHBOARD V5 (NO CRASH) +++++
-# =======================================================
-
-@dp.message(Command("stats"), AdminFilter())
-@handler_timeout(20)
-async def stats_command(message: types.Message, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    # UI: Working state
-    loading_msg = await safe_tg_call(message.answer("🔄 **Establishing Server Uplink...**"), semaphore=TELEGRAM_COPY_SEMAPHORE)
-    if not loading_msg: return
-
-    try:
-        # Generate Dashboard
-        text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        await safe_tg_call(loading_msg.edit_text(text, reply_markup=reply_markup))
-    except Exception as e:
-        logger.error(f"Stats generation failed: {e}")
-        await safe_tg_call(loading_msg.edit_text(f"❌ **Stats Error**: {str(e)[:100]}"))
+        logger.error(f"Stats error: {e}")
+        await safe_tg_call(loading_msg.edit_text(f"❌ <b>Error:</b> {str(e)[:100]}", parse_mode=ParseMode.HTML))
 
 @dp.callback_query(F.data == "admin_stats_cmd", AdminFilter())
 @handler_timeout(25)
 async def admin_stats_callback(callback: types.CallbackQuery, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
     try:
-        # Generate NEW data
         text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
+        result = await safe_tg_call(callback.message.edit_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML))
         
-        # FIX: Check content difference logic removed to force update attempt
-        # We use a trick: Append invisible character based on time to force update if content is same
-        # But here content changes every second (time/cpu), so it should update.
-        
-        result = await safe_tg_call(callback.message.edit_text(text, reply_markup=reply_markup))
-        
-        if result:
-            # Success
-            pass
+        if result is None:
+            await safe_tg_call(callback.answer("✅ System is up to date!", show_alert=False))
         else:
-            # Agar 'MessageNotModified' hai to thik hai, par agar HTML error hai to dikkat hai.
-            # Hum ek 'toast' bhejenge taaki pata chale button dab gaya.
-            await safe_tg_call(callback.answer("⚡ Dashboard Updated", show_alert=False))
+            await safe_tg_call(callback.answer("⚡ System Vitals Updated", show_alert=False))
             
     except Exception as e:
-        logger.error(f"Stats callback critical fail: {e}", exc_info=True)
-        # Fallback agar fancy dashboard fail ho jaye
-        await safe_tg_call(callback.message.edit_text(f"⚠️ **Dashboard Error**\n{str(e)[:100]}", reply_markup=None))
+        logger.error(f"Stats callback failed: {e}")
+        await safe_tg_call(callback.answer("❌ Refresh Failed. Check logs.", show_alert=True))
 
 async def generate_admin_dashboard(db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
     """
@@ -2559,188 +2500,6 @@ async def generate_admin_dashboard(db_primary: Database, db_fallback: Database, 
     ])
     
     return dashboard_text, keyboard
-
-@dp.message(Command("stats"), AdminFilter())
-@handler_timeout(30)
-async def stats_command(message: types.Message, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    # Step 1: Send placeholder
-    try:
-        wait_msg = await message.answer("📊 <b>Analysing System...</b>", parse_mode="HTML")
-    except Exception as e:
-        # Agar ye fail hua matlab Parse Mode ki galti hai
-        wait_msg = await message.answer(f"Error sending wait message: {e}")
-        return
-
-    try:
-        # Step 2: Generate Data
-        text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        
-        # Step 3: Edit Message (DIRECT CALL - NO WRAPPER)
-        # Hum safe_tg_call use nahi kar rahe taaki asli error dikhe
-        await bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=wait_msg.message_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        # CRITICAL ERROR LOGGING
-        error_trace = traceback.format_exc()
-        logger.error(f"STATS CRASHED: {error_trace}")
-        
-        # User ko batao ki galti kahan hai
-        error_msg = f"❌ <b>DASHBOARD CRASHED</b>\n\n<b>Reason:</b> {str(e)}\n\nCheck Logs for details."
-        # Safe edit
-        await bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=wait_msg.message_id,
-            text=error_msg,
-            parse_mode="HTML"
-        )
-
-@dp.callback_query(F.data == "admin_stats_cmd", AdminFilter())
-@handler_timeout(30)
-async def admin_stats_callback(callback: types.CallbackQuery, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    try:
-        text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        
-        await bot.edit_message_text(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode="HTML"
-        )
-        await callback.answer("✅ Refreshed")
-        
-    except Exception as e:
-        logger.error(f"STATS CALLBACK CRASHED: {e}")
-        await callback.answer(f"❌ Error: {str(e)[:50]}", show_alert=True)
-
-# --- 2. COMMAND HANDLER ---
-@dp.message(Command("stats"), AdminFilter())
-@handler_timeout(20)
-async def stats_command(message: types.Message, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    # Send a placeholder first
-    wait_msg = await message.answer("🔄 *Fetching Metrics...*", parse_mode="Markdown")
-    
-    try:
-        text, markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        # Directly calling edit_text with Markdown to avoid safe_tg_call masking errors
-        await bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=wait_msg.message_id,
-            text=text,
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"Stats Command Error: {e}")
-        # Error dikhayenge taaki pata chale kya issue hai
-        await bot.edit_message_text(
-            chat_id=message.chat.id,
-            message_id=wait_msg.message_id,
-            text=f"❌ *Dashboard Crash*\nReason: `{str(e)[:100]}`",
-            parse_mode="Markdown"
-        )
-
-# --- 3. CALLBACK HANDLER (REFRESH) ---
-@dp.callback_query(F.data == "admin_stats_cmd", AdminFilter())
-@handler_timeout(30)
-async def admin_stats_callback(callback: types.CallbackQuery, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    try:
-        text, markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        
-        # Using raw edit_message_text to ensure we see specific errors if any
-        await bot.edit_message_text(
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            text=text,
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
-        # Toast notification
-        await callback.answer("✅ Refreshed Successfully")
-        
-    except Exception as e:
-        error_str = str(e)
-        # Message Not Modified is NOT an error for us, it means data is same (though RefID prevents this usually)
-        if "message is not modified" in error_str.lower():
-            await callback.answer("✅ Already Updated")
-        else:
-            logger.error(f"Stats Callback Error: {e}")
-            await callback.answer(f"❌ Error: {error_str[:50]}", show_alert=True)
-
-@dp.message(Command("stats"), AdminFilter())
-@handler_timeout(20)
-async def stats_command(message: types.Message, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    loading_msg = await safe_tg_call(message.answer("🔄 <b>Fetching Server Metrics...</b>"), semaphore=TELEGRAM_COPY_SEMAPHORE)
-    if not loading_msg: return
-
-    try:
-        text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        # Force ParseMode.HTML to ensure rendering
-        await safe_tg_call(loading_msg.edit_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML))
-    except Exception as e:
-        logger.error(f"Stats error: {e}")
-        await safe_tg_call(loading_msg.edit_text(f"❌ <b>Error:</b> {str(e)[:100]}", parse_mode=ParseMode.HTML))
-
-@dp.callback_query(F.data == "admin_stats_cmd", AdminFilter())
-@handler_timeout(25)
-async def admin_stats_callback(callback: types.CallbackQuery, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    try:
-        text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        # Edit text with HTML mode forced
-        await safe_tg_call(callback.message.edit_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML))
-        # Answer callback to stop loading animation
-        await safe_tg_call(callback.answer("✅ Updated"))
-    except Exception as e:
-        if "message is not modified" in str(e).lower():
-             await safe_tg_call(callback.answer("✅ Already Up-to-Date"))
-        else:
-            logger.error(f"Stats callback error: {e}")
-            await safe_tg_call(callback.answer("❌ Update Failed"))
-  
-async def stats_command(message: types.Message, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    # UI: Working state
-    loading_msg = await safe_tg_call(message.answer("📊 *Analysing System Metrics...*"), semaphore=TELEGRAM_COPY_SEMAPHORE)
-    if not loading_msg: return
-
-    try:
-        # Generate Dashboard using the central function
-        text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        await safe_tg_call(loading_msg.edit_text(text, reply_markup=reply_markup))
-    except Exception as e:
-        logger.error(f"Stats generation failed: {e}")
-        await safe_tg_call(loading_msg.edit_text(f"❌ *Stats Error*: {e}"))
-
-# --- REPLACEMENT FOR admin_stats_callback (SMOOTH REFRESH FIX) ---
-@dp.callback_query(F.data == "admin_stats_cmd", AdminFilter())
-@handler_timeout(25) # Thoda time badha diya heavy dashboard ke liye
-async def admin_stats_callback(callback: types.CallbackQuery, db_primary: Database, db_fallback: Database, db_neon: NeonDB, redis_cache: RedisCacheLayer):
-    # No callback.answer() here to make it feel faster/smoother
-    try:
-        # Generate NEW data (EC2 Vitals included)
-        text, reply_markup = await generate_admin_dashboard(db_primary, db_fallback, db_neon, redis_cache)
-        
-        # Try to EDIT the message
-        # safe_tg_call will handle "Message Not Modified" automatically
-        result = await safe_tg_call(callback.message.edit_text(text, reply_markup=reply_markup))
-        
-        if result is None:
-            # Agar content same tha (Refresh dabaya par kuch badla nahi)
-            await safe_tg_call(callback.answer("✅ System is up to date!", show_alert=False))
-        else:
-            # Agar naya dashboard load hua
-            # Optional: Sound effect ya toast notification
-            # await safe_tg_call(callback.answer("⚡ System Vitals Updated"))
-            pass
-            
-    except Exception as e:
-        logger.error(f"Stats callback failed: {e}")
-        await safe_tg_call(callback.answer("❌ Refresh Failed. Check logs.", show_alert=True))
-# --- END NEW ---
 
 # UI Enhancement: DEDICATED ADMIN PANEL COMMAND HUB
 @dp.message(Command("admin_panel"), AdminFilter())
