@@ -74,25 +74,32 @@ class SmartWatchdog:
         ))
         logger.error(f"Watchdog Alert Sent: {title}")
 
-    async def _monitor_resources(self):
-        """Monitors CPU, RAM, and Disk Usage."""
+        async def _monitor_resources(self):
+        """Monitors CPU, RAM, and Disk Usage with SELF-HEALING."""
         try:
-            # 1. CPU Check
+            # 1. CPU Check (Lightweight)
             cpu = psutil.cpu_percent(interval=None)
             if cpu >= CPU_ALERT_THRESHOLD:
                 await self._send_alert("high_cpu", "🔥 HIGH CPU LOAD", f"CPU Usage is at {cpu}%. Workers might be overloaded.")
 
-            # 2. RAM Check (Critical for Render/AWS Free Tier)
+            # 2. RAM Check & AUTO-HEALING (Smart Feature)
             ram = psutil.virtual_memory()
             if ram.percent >= RAM_ALERT_THRESHOLD:
-                used_mb = ram.used // 1024 // 1024
-                await self._send_alert(
-                    "high_ram", 
-                    "💾 HIGH RAM USAGE (OOM RISK)", 
-                    f"RAM Usage: {ram.percent}% ({used_mb}MB used). Bot crash risk high!"
-                )
+                import gc
+                logger.warning("High RAM detected! Triggering Auto-Garbage Collection...")
+                gc.collect() # Automatically free up unused memory
+                
+                # Cleanup ke baad dobara check karein
+                ram_after = psutil.virtual_memory()
+                if ram_after.percent >= RAM_ALERT_THRESHOLD:
+                    used_mb = ram_after.used // 1024 // 1024
+                    await self._send_alert(
+                        "high_ram", 
+                        "💾 HIGH RAM USAGE (OOM RISK)", 
+                        f"RAM: {ram_after.percent}% ({used_mb}MB used).\nAuto-cleanup failed to reduce load. Crash risk high!"
+                    )
 
-            # 3. Disk Check (Logs filling up)
+            # 3. Disk Check
             disk = psutil.disk_usage('.')
             if disk.percent >= 90:
                 await self._send_alert("high_disk", "💿 LOW DISK SPACE", f"Disk usage is at {disk.percent}%. Cleanup required.")
@@ -134,20 +141,43 @@ class SmartWatchdog:
         except Exception as e:
             logger.error(f"Queue monitor error: {e}")
 
-    async def _monitor_services(self):
-        """Checks Databases and Redis Connectivity."""
-        # 1. MongoDB
-        if not await self.db_primary.is_ready():
-            await self._send_alert("mongo_down", "❌ MONGODB PRIMARY DOWN", "Connection to MongoDB Atlas failed. Bot functionality is limited.")
+        async def _monitor_services(self):
+        """Checks Databases and Redis Connectivity (With Anti-Freeze Timeouts)."""
+        # Timeout limit lagana zaroori hai taaki DB down hone par bot hang na ho
+        TIMEOUT_SEC = 3.0 
+        
+        try:
+            # 1. MongoDB Check
+            is_mongo_ready = await asyncio.wait_for(self.db_primary.is_ready(), timeout=TIMEOUT_SEC)
+            if not is_mongo_ready:
+                await self._send_alert("mongo_down", "❌ MONGODB PRIMARY DOWN", "Connection to MongoDB Atlas returned False.")
+        except asyncio.TimeoutError:
+            await self._send_alert("mongo_hang", "⏳ MONGODB HANGING", f"MongoDB took >{TIMEOUT_SEC}s to respond. Network issue!")
+        except Exception:
+            pass
 
-        # 2. NeonDB
-        if not await self.db_neon.is_ready():
-            await self._send_alert("neon_down", "❌ NEON DB DOWN", "Connection to Neon PostgreSQL failed. Search/Backup affected.")
+        try:
+            # 2. NeonDB Check
+            is_neon_ready = await asyncio.wait_for(self.db_neon.is_ready(), timeout=TIMEOUT_SEC)
+            if not is_neon_ready:
+                await self._send_alert("neon_down", "❌ NEON DB DOWN", "Connection to Neon PostgreSQL failed. Search/Backup affected.")
+        except asyncio.TimeoutError:
+            await self._send_alert("neon_hang", "⏳ NEON DB HANGING", f"Neon DB took >{TIMEOUT_SEC}s to respond.")
+        except Exception:
+            pass
 
-        # 3. Redis
-        if self.redis_cache.redis and not self.redis_cache.is_ready():
-            await self._send_alert("redis_down", "⚠️ REDIS DOWN", "Redis Cache is unreachable. System falling back to DB (Slower).")
-
+        # 3. Redis Check (Safe attribute check)
+        try:
+            if hasattr(self.redis_cache, 'is_ready'):
+                # Handle both async and sync is_ready functions gracefully
+                ready = self.redis_cache.is_ready()
+                if asyncio.iscoroutine(ready):
+                    ready = await asyncio.wait_for(ready, timeout=TIMEOUT_SEC)
+                
+                if not ready:
+                    await self._send_alert("redis_down", "⚠️ REDIS DOWN", "Redis Cache is unreachable. System falling back to DB.")
+        except Exception as e:
+            logger.error(f"Redis watchdog check failed: {e}")
     async def run_watchdog(self):
         """Main Watchdog Loop"""
         if not WATCHDOG_ENABLED:
