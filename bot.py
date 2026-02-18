@@ -81,6 +81,13 @@ from neondb import NeonDB
 ADMIN_ACTIVE_TASKS = {} 
     # --- GLOBAL MEMORY FALLBACK ---
 LOCAL_SEARCH_CACHE = {} 
+# --- GLOBAL CACHE FOR BOT USERNAME (API Optimization) ---
+_CACHED_BOT_USERNAME = None
+async def get_cached_bot_username(bot: Bot) -> str:
+    global _CACHED_BOT_USERNAME
+    if not _CACHED_BOT_USERNAME:
+        _CACHED_BOT_USERNAME = (await bot.get_me()).username
+    return _CACHED_BOT_USERNAME
 # ============ LOGGING SETUP ============
 logging.basicConfig(
     level=logging.INFO,
