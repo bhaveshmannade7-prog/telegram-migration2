@@ -52,11 +52,10 @@ class SmartWatchdog:
             logger.warning(f"Watchdog Alert Suppressed (Cooldown): {title}")
             return
 
-        # Update last sent time
+                # Update last sent time
         self.alert_history[alert_key] = now
         
-                uptime_seconds = (now - self.dp.start_time).total_seconds()
-
+        uptime_seconds = (now - self.start_time).total_seconds()
         uptime_str = f"{int(uptime_seconds // 3600)}h {int((uptime_seconds % 3600) // 60)}m"
 
         alert_message = (
