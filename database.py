@@ -918,13 +918,18 @@ class Database:
             
             movies = list(movies_dict.values())
 
-            # --- HOOK 4: Agar Mongo se load hua, toh Redis mein save karein ---
+                        # --- HOOK 4: Agar Mongo se load hua, toh Redis mein save karein ---
             if movies and redis_cache.is_ready():
-                # Dictionary banana jiske keys 'clean_title' hon
-                cache_dict = {m['clean_title']: m for m in movies if m.get('clean_title')}
+                # FIX: Ek title ke andar multiple movies (remakes) ko list me save karein
+                cache_dict = {}
+                for m in movies:
+                    ct = m.get('clean_title')
+                    if ct:
+                        if ct not in cache_dict:
+                            cache_dict[ct] = []
+                        cache_dict[ct].append(m)
                 asyncio.create_task(redis_cache.save_fuzzy_cache(cache_dict))
             # --- END HOOK 4 ---
-
             return movies
         except Exception as e:
             logger.error(f"get_all_movies_for_fuzzy_cache error: {e}", exc_info=True)
