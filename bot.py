@@ -1766,12 +1766,16 @@ async def process_search_results(
                 except Exception as e:
                     logger.error(f"Redis Write Error: {e}")
                 
-                # RAM Save (Always works)
+                                # RAM Save (Always works)
                 LOCAL_SEARCH_CACHE[user_id] = {
                     'results': final_results,
                     'query': query,
                     'time': datetime.now().timestamp()
                 }
+                # --- MEMORY LEAK FIX: Max 1000 users history ---
+                if len(LOCAL_SEARCH_CACHE) > 1000:
+                    oldest_keys = sorted(LOCAL_SEARCH_CACHE, key=lambda k: LOCAL_SEARCH_CACHE[k]['time'])[:200]
+                    for k in oldest_keys: LOCAL_SEARCH_CACHE.pop(k, None)
 
         # If still no results
         if not final_results: 
@@ -2046,7 +2050,7 @@ async def get_movie_callback(callback: types.CallbackQuery, bot: Bot, db_primary
         return
     
     # --- NEW: Delete Search Result Immediately (Private Chat Only) ---
-    if callback.message.chat.type == "private":
+    if callback.message and callback.message.chat.type == "private":
         try:
             await callback.message.delete()
         except Exception:
