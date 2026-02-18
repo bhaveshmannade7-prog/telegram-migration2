@@ -3177,7 +3177,8 @@ async def import_json_command(message: types.Message, db_primary: Database, db_f
             return
         # --- FIX END ---
 
-        # JSON parsing is CPU bound, run in executor
+                # JSON parsing is CPU bound, run in executor
+        loop = asyncio.get_running_loop()
         mlist = await loop.run_in_executor(executor, lambda: json.loads(fio.read().decode('utf-8')))
 
         assert isinstance(mlist, list)
