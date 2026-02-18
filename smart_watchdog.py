@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import gc
 import psutil # Resource monitoring
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any
@@ -29,8 +30,7 @@ class SmartWatchdog:
         self.db_primary = db_objects['db_primary']
         self.db_neon = db_objects['db_neon']
         self.redis_cache = db_objects['redis_cache']
-        
-        import gc               
+               
         self.owner_id = ADMIN_ID
         self.is_running = False
         self.task = None
