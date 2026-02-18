@@ -30,11 +30,12 @@ class SmartWatchdog:
         self.db_neon = db_objects['db_neon']
         self.redis_cache = db_objects['redis_cache']
         
-                import gc # SMART FIX: For Auto-Memory Cleanup
+                        import gc
         self.owner_id = ADMIN_ID
         self.is_running = False
-        self.task: asyncio.Task | None = None
-        self.start_time = datetime.now(timezone.utc) # FIX: dp.start_time error se bachne ke liye
+        self.task = None
+        self.start_time = datetime.now(timezone.utc)
+
         
         # Smart Alert Throttling (To prevent spamming admin)
         self.alert_history = {} 
