@@ -74,7 +74,7 @@ class SmartWatchdog:
         ))
         logger.error(f"Watchdog Alert Sent: {title}")
 
-        async def _monitor_resources(self):
+            async def _monitor_resources(self):
         """Monitors CPU, RAM, and Disk Usage with SELF-HEALING."""
         try:
             # 1. CPU Check (Lightweight)
