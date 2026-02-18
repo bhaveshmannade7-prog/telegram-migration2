@@ -30,7 +30,7 @@ class SmartWatchdog:
         self.db_neon = db_objects['db_neon']
         self.redis_cache = db_objects['redis_cache']
         
-                        import gc
+        import gc               
         self.owner_id = ADMIN_ID
         self.is_running = False
         self.task = None
