@@ -35,7 +35,6 @@ class SmartWatchdog:
         self.is_running = False
         self.task = None
         self.start_time = datetime.now(timezone.utc)
-
         
         # Smart Alert Throttling (To prevent spamming admin)
         self.alert_history = {} 
@@ -52,7 +51,7 @@ class SmartWatchdog:
             logger.warning(f"Watchdog Alert Suppressed (Cooldown): {title}")
             return
 
-                # Update last sent time
+        # Update last sent time
         self.alert_history[alert_key] = now
         
         uptime_seconds = (now - self.start_time).total_seconds()
@@ -74,7 +73,7 @@ class SmartWatchdog:
         ))
         logger.error(f"Watchdog Alert Sent: {title}")
 
-            async def _monitor_resources(self):
+    async def _monitor_resources(self):
         """Monitors CPU, RAM, and Disk Usage with SELF-HEALING."""
         try:
             # 1. CPU Check (Lightweight)
@@ -141,7 +140,7 @@ class SmartWatchdog:
         except Exception as e:
             logger.error(f"Queue monitor error: {e}")
 
-        async def _monitor_services(self):
+    async def _monitor_services(self):
         """Checks Databases and Redis Connectivity (With Anti-Freeze Timeouts)."""
         # Timeout limit lagana zaroori hai taaki DB down hone par bot hang na ho
         TIMEOUT_SEC = 3.0 
@@ -178,6 +177,7 @@ class SmartWatchdog:
                     await self._send_alert("redis_down", "⚠️ REDIS DOWN", "Redis Cache is unreachable. System falling back to DB.")
         except Exception as e:
             logger.error(f"Redis watchdog check failed: {e}")
+
     async def run_watchdog(self):
         """Main Watchdog Loop"""
         if not WATCHDOG_ENABLED:
