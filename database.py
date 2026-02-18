@@ -706,11 +706,11 @@ class Database:
                     reverse=True
                 )
                 
-                # Keep the latest one (index 0), delete the rest
-                ids_to_delete.extend([doc['_id'] for doc in sorted_docs[1:]])
-                
-                if len(ids_to_delete) >= batch_limit:
-                    break
+                                # Keep the latest one (index 0), delete the rest
+                # FIX: Count sabko karo, par delete sirf batch limit tak karo
+                if len(ids_to_delete) < batch_limit:
+                    remaining_space = batch_limit - len(ids_to_delete)
+                    ids_to_delete.extend([doc['_id'] for doc in sorted_docs[1:]][:remaining_space])
             
             if not ids_to_delete:
                 return (0, 0)
