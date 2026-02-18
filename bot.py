@@ -657,25 +657,22 @@ def get_quality_label(filename: str) -> str:
     if "480" in f: return "📱 480p SD"
     if "2160" in f or "4k" in f: return "🌟 4K UHD"
     return "🎬 Watch Now"
-def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
+async def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     """
-    ULTIMATE BANNER ENGINE V18 (HYBRID AI SEARCH)
+    ULTIMATE BANNER ENGINE V19 (ASYNC AIOHTTP + TMDB + BING)
     ---------------------------------------------------
-    1. Cinemeta API (TMDB High-Res Posters - No Key Needed)
-    2. OMDb API (Fallback)
-    3. Bing Smart Image Search (For fake IMDB IDs / regional movies)
-    4. WSRV.nl Proxy (Formats for Telegram UI perfectly)
+    100% Crash-Proof with Native AIOHTTP Support.
     """
     import urllib.parse
     import re
-    import requests
+    import aiohttp
+    import asyncio
 
     # Netflix-style Dark Background Color
     BG_COLOR = "0d0d0d" 
-    # High-Res Default Placeholder
-    DEFAULT_RAW = "https://i.ibb.co/9p43Y4k/default-movie.jpg"
+    # 100% Direct Image Fallback (Agar sab fail ho jaye)
+    DEFAULT_RAW = "https://dummyimage.com/600x900/0d0d0d/ffffff.jpg&text=Poster+Not+Found"
     
-    # Fake Browser Headers (To bypass 403 blocks)
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
     }
@@ -683,63 +680,60 @@ def get_poster_url(imdb_id: str, title: str = "", year: str = "") -> str:
     raw_url = None
     omdb_key = "19f1d07c"
     
-    # Clean title for fallback searches (Removes special characters)
     clean_title = re.sub(r"[^a-zA-Z0-9\s]", "", str(title)).strip()
     safe_year = str(year).strip() if year and str(year).isdigit() else ""
-
     is_real_imdb = bool(imdb_id and str(imdb_id).startswith("tt") and str(imdb_id)[2:].isdigit())
 
-    # --- LEVEL 1: CINEMETA OPEN API (Best Quality TMDB Posters) ---
-    if is_real_imdb and not raw_url:
-        try:
-            cinemeta_url = f"https://v3-cinemeta.strem.io/meta/movie/{imdb_id}.json"
-            response = requests.get(cinemeta_url, headers=HEADERS, timeout=2.0).json()
-            if "meta" in response and response["meta"].get("poster"):
-                raw_url = response["meta"]["poster"]
-        except Exception:
-            pass
-
-    # --- LEVEL 2: OMDB API (Secondary API Fallback) ---
-    if is_real_imdb and not raw_url:
-        try:
-            target_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
-            with requests.get(target_url, headers=HEADERS, stream=True, timeout=1.5) as r:
-                if r.status_code == 200 and 'image' in r.headers.get('content-type', '').lower():
-                    raw_url = target_url
-        except Exception:
-            pass
-
-    # --- LEVEL 3: BING SMART TEXT SEARCH (Semantic Fallback) ---
-    # Agar IMDB id 'auto_123' ya 'json_abc' jaisi hai, tab bhi search karega
-    if not raw_url and clean_title:
-        try:
-            # Bina strict quotes ke search taaki spelling variations handle ho sakein
-            search_query = f"{clean_title} {safe_year} official movie poster high resolution".strip()
-            safe_query = urllib.parse.quote(search_query)
+    try:
+        # Naya AIOHTTP connection (No "requests" library needed)
+        async with aiohttp.ClientSession(headers=HEADERS) as session:
             
-            # w=800 (Width), c=7 (Image Quality/Crop)
-            bing_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=800&c=7&rs=1"
-            
-            # Verify if Bing returns an actual image and not a tiny 1x1 error pixel
-            with requests.get(bing_url, headers=HEADERS, stream=True, timeout=1.5) as r:
-                # Normal images are usually > 2000 bytes
-                if r.status_code == 200 and int(r.headers.get('content-length', len(r.content))) > 2000:
-                    raw_url = bing_url
-        except Exception:
-            pass
+            # --- LEVEL 1: CINEMETA (TMDB High-Res Posters) ---
+            if is_real_imdb:
+                try:
+                    cinemeta_url = f"https://v3-cinemeta.strem.io/meta/movie/{imdb_id}.json"
+                    async with session.get(cinemeta_url, timeout=2.0) as r:
+                        if r.status == 200:
+                            data = await r.json()
+                            if "meta" in data and data["meta"].get("poster"):
+                                raw_url = data["meta"]["poster"]
+                except Exception:
+                    pass
 
-    # --- LEVEL 4: TELEGRAM OPTIMIZER (WSRV.NL Proxy) ---
-    # Agar kisi bhi tarah image nahi mili, toh professional default banner lagayega
+            # --- LEVEL 2: OMDB API (Fallback) ---
+            if is_real_imdb and not raw_url:
+                try:
+                    target_url = f"http://img.omdbapi.com/?apikey={omdb_key}&i={imdb_id}"
+                    async with session.get(target_url, timeout=2.0) as r:
+                        if r.status == 200 and 'image' in r.headers.get('content-type', '').lower():
+                            raw_url = target_url
+                except Exception:
+                    pass
+
+            # --- LEVEL 3: BING SMART TEXT SEARCH (Spelling variations) ---
+            if not raw_url and clean_title:
+                try:
+                    search_query = f"{clean_title} {safe_year} movie poster".strip()
+                    safe_query = urllib.parse.quote(search_query)
+                    bing_url = f"https://tse2.mm.bing.net/th?q={safe_query}&w=800&c=7&rs=1"
+                    
+                    async with session.get(bing_url, timeout=2.0) as r:
+                        if r.status == 200:
+                            content = await r.read()
+                            if len(content) > 2000: # Verify it's a real image
+                                raw_url = bing_url
+                except Exception:
+                    pass
+                    
+    except Exception as e:
+        logger.error(f"Poster Session Error: {e}")
+
+    # --- LEVEL 4: TELEGRAM OPTIMIZER ---
     final_source = raw_url if raw_url else DEFAULT_RAW
     safe_raw = urllib.parse.quote(final_source)
 
-    # LEGENDARY PARAMETERS:
-    # 1. fit=contain: Image kabhi cut nahi hogi.
-    # 2. w=1000&h=500: Telegram Banner ka Standard size.
-    # 3. cbg: Missing space ko dark color se fill karega.
-    # 4. output=webp: Super fast loading.
     return f"https://wsrv.nl/?url={safe_raw}&w=1000&h=500&fit=contain&a=center&cbg={BG_COLOR}&output=webp"
-                  
+                 
 # UI Enhancement: Overflow message redesigned
 def overflow_message(active_users: int) -> str:
     return (
