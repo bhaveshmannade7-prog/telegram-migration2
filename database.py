@@ -986,12 +986,9 @@ class Database:
             bulk_ops = []
             processed_cursor_count = 0
 
-            # anext() का उपयोग करके सुरक्षित रूप से iterate करें
+                        # SMART FIX: async for is safely supported in all async Python versions
             try:
-                # anext() Python 3.10+ में async iterators के लिए built-in hai
-                # agar aapka Python version isse kam hai, toh yeh async for loop ke barabar hi kaam karega.
-                while True:
-                    movie = await anext(cursor) 
+                async for movie in cursor:
                     processed_cursor_count += 1
 
                     if "title" in movie and movie["title"]:
