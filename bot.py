@@ -1807,17 +1807,18 @@ async def process_search_results(
         buttons = []
         poster_url = None
         
-        # Header & Banner
+                # Header & Banner
         if page == 0:
             top_movie = page_results[0]
             t_title = top_movie.get('title', 'Unknown')
             t_id = top_movie.get('imdb_id', 'N/A')
             
-            # Safe Poster Call
+            # Safe Poster Call (FIXED AWAIT)
             try:
-                poster_url = get_poster_url(t_id, t_title, top_movie.get('year', ''))
-            except:
-                poster_url = "https://i.ibb.co/9p43Y4k/default-movie.jpg"
+                poster_url = await get_poster_url(t_id, t_title, top_movie.get('year', ''))
+            except Exception as e:
+                logger.error(f"Banner Error: {e}")
+                poster_url = "https://dummyimage.com/1000x500/0d0d0d/ffffff.jpg&text=Poster+Not+Found"
             
             text = (
                 f"🎬 **SEARCH RESULTS**\n"
