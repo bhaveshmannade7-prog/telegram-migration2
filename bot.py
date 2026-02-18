@@ -2878,7 +2878,6 @@ async def clear_ads_cmd(message: types.Message, db_primary: Database):
          await message.answer("ℹ️ **Database Clean.** No ads found to delete.")
 
 @dp.message(Command("setshort"), AdminFilter())
-@dp.message(Command("setshort"), AdminFilter())
 async def set_shortlink_cmd(message: types.Message, db_primary: Database):
     args = message.text.split(maxsplit=2)
     
