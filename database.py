@@ -117,16 +117,18 @@ class Database:
             self.client = None
             return False
             
-    async def is_ready(self) -> bool:
-        """Checks if the connection is active।"""
-        if self.client is None or self.db is None:
+        async def is_ready(self):
+        if not self.client:
             return False
         try:
-            # The ping command is a low-latency operation.
-            await self.client.admin.command('ping')
+            # Halka ping bhejein, default 5s timeout ke sath
+            await asyncio.wait_for(self.db.command("ping"), timeout=5.0)
             return True
-        except:
-            return False
+        except Exception as e:
+            logger.warning(f"Mongo Ping delayed/failed: {e}")
+            # CRITICAL FIX: Yahan self.client = None KABHI MAT KAREIN! 
+            # Motor ko khud reconnect karne dein.
+            return False 
 
     async def create_mongo_text_index(self):
         """MongoDB text search ke liye index banata hai।"""
