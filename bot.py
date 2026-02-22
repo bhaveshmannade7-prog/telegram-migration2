@@ -2367,9 +2367,10 @@ async def auto_index_handler(message: types.Message, db_primary: Database, db_fa
     clean_title_val = clean_text_for_search(title)
     
     # 7. Database Operations
-    db1_task = safe_db_call(db_primary.add_movie(imdb_id, title, year, file_id, message.message_id, message.chat.id, clean_title_val, file_unique_id))
-    db2_task = safe_db_call(db_fallback.add_movie(imdb_id, title, year, file_id, message.message_id, message.chat.id, clean_title_val, file_unique_id))
-    neon_task = safe_db_call(db_neon.add_movie(message.message_id, message.chat.id, file_id, file_unique_id, imdb_id, title))
+     # FIX: Explicit 20s timeout for heavy write operations to prevent silent fails
+    db1_task = safe_db_call(db_primary.add_movie(imdb_id, title, year, file_id, message.message_id, message.chat.id, clean_title_val, file_unique_id), timeout=20.0)
+    db2_task = safe_db_call(db_fallback.add_movie(imdb_id, title, year, file_id, message.message_id, message.chat.id, clean_title_val, file_unique_id), timeout=20.0)
+    neon_task = safe_db_call(db_neon.add_movie(message.message_id, message.chat.id, file_id, file_unique_id, imdb_id, title), timeout=20.0)
     
     async def run_tasks():
         res = await db1_task
