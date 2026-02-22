@@ -20,28 +20,17 @@ WEBHOOK_SEMAPHORE = asyncio.Semaphore(1)
 
 
 # --- SAFE API CALL WRAPPERS (Final Fix) ---
-async def safe_db_call(coro, timeout=DB_OP_TIMEOUT, default=None):
-    """
-    Async database coroutine (motor, asyncpg) ko execute karta hai,
-    timeout aur exceptions ko handle karta hai.
-    """
-    if not asyncio.iscoroutine(coro):
-         logger.error(f"SAFE_DB_CALL ERROR: Non-coroutine object passed for {getattr(coro, '__name__', 'unknown_func')}")
-         return default
-         
+async def safe_db_call(coro, timeout=15.0, default=None): # Default timeout 15s karo
     try:
-        # DB_SEMAPHORE aur timeout ka use
-        async with DB_SEMAPHORE: 
-            return await asyncio.wait_for(coro, timeout=timeout)
+        return await asyncio.wait_for(coro, timeout=timeout)
     except asyncio.TimeoutError:
-        logger.error(f"DB call timeout ({timeout}s): {getattr(coro, '__name__', 'unknown_coro')}")
-        # Connection Failure ko simulate karne ke liye None return karein (Failure State)
+        # LOG karna zaruri hai taaki pata chale kaunsi query atki
+        logging.getLogger("bot.db").error(f"DB Timeout ({timeout}s) for {coro.__name__ if hasattr(coro, '__name__') else 'query'}")
         return default
     except Exception as e:
-         # ConnectionFailure, OperationFailure, etc. catch honge
-         logger.error(f"DB error in {getattr(coro, '__name__', 'unknown_coro')}: {e}", exc_info=True)
-         return default
-
+        # Exception swallow mat karo, log karo!
+        logging.getLogger("bot.db").error(f"DB Call Failed: {e}", exc_info=True)
+        return default
 
 async def safe_tg_call(coro, timeout=TG_OP_TIMEOUT, semaphore: asyncio.Semaphore | None = None, bot: Bot | None = None):
     """
