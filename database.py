@@ -117,7 +117,7 @@ class Database:
             self.client = None
             return False
             
-            async def is_ready(self):
+    async def is_ready(self):
         if not self.client:
             return False
         try:
