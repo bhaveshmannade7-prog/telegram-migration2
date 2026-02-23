@@ -117,7 +117,7 @@ class Database:
             self.client = None
             return False
             
-        async def is_ready(self):
+            async def is_ready(self):
         if not self.client:
             return False
         try:
@@ -128,7 +128,7 @@ class Database:
             logger.warning(f"Mongo Ping delayed/failed: {e}")
             # CRITICAL FIX: Yahan self.client = None KABHI MAT KAREIN! 
             # Motor ko khud reconnect karne dein.
-            return False 
+            return False
 
     async def create_mongo_text_index(self):
         """MongoDB text search ke liye index banata hai।"""
