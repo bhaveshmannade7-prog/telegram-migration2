@@ -140,18 +140,20 @@ class SmartWatchdog:
         except Exception as e:
             logger.error(f"Queue monitor error: {e}")
 
-    async def _monitor_services(self):
-        """Checks Databases and Redis Connectivity (With Anti-Freeze Timeouts)."""
-        # Timeout limit lagana zaroori hai taaki DB down hone par bot hang na ho
-        TIMEOUT_SEC = 3.0 
+        async def _monitor_services(self):
+        """Checks Databases and Redis Connectivity (With Relaxed Timeouts)."""
+        TIMEOUT_SEC = 12.0 # FIX: Relaxed timeout for Cloud DBs
         
         try:
-            # 1. MongoDB Check
+            # 1. MongoDB Check (With Retry Logic)
             is_mongo_ready = await asyncio.wait_for(self.db_primary.is_ready(), timeout=TIMEOUT_SEC)
             if not is_mongo_ready:
-                await self._send_alert("mongo_down", "❌ MONGODB PRIMARY DOWN", "Connection to MongoDB Atlas returned False.")
+                # Turant alert na bhej kar ek second wait karke retry karein
+                await asyncio.sleep(2)
+                if not await asyncio.wait_for(self.db_primary.is_ready(), timeout=TIMEOUT_SEC):
+                    await self._send_alert("mongo_down", "❌ MONGODB PRIMARY DOWN", "Atlas connection failed twice.")
         except asyncio.TimeoutError:
-            await self._send_alert("mongo_hang", "⏳ MONGODB HANGING", f"MongoDB took >{TIMEOUT_SEC}s to respond. Network issue!")
+            await self._send_alert("mongo_hang", "⏳ MONGODB HANGING", f"MongoDB took >{TIMEOUT_SEC}s to respond.")
         except Exception:
             pass
 
