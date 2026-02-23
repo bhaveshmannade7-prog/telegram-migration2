@@ -140,7 +140,7 @@ class SmartWatchdog:
         except Exception as e:
             logger.error(f"Queue monitor error: {e}")
 
-        async def _monitor_services(self):
+                async def _monitor_services(self):
         """Checks Databases and Redis Connectivity (With Relaxed Timeouts)."""
         TIMEOUT_SEC = 12.0 # FIX: Relaxed timeout for Cloud DBs
         
